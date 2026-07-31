@@ -1,0 +1,24 @@
+[package]
+name = "easyflp"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "easyflp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "easyflp"
+path = "src/cli.rs"
+
+[[bin]]
+name = "easyflp-gui"
+path = "src/gui/main.rs"
+
+[dependencies]
+eframe = "0.31"
+rfd = "0.15"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+strip = true

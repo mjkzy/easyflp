@@ -1,0 +1,75 @@
+name: Build
+permissions:
+  contents: write
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - "*"
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build binaries
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out files
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build easyFLP
+        run: cargo build --release
+
+      - name: Upload easyFLP
+        uses: actions/upload-artifact@v4
+        with:
+          name: easyFLP
+          path: |
+            target/release/easyflp.exe
+            target/release/easyflp-gui.exe
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Check out files
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: easyFLP
+          path: easyFLP
+
+      - name: Delete old release/tag if exists
+        run: |
+          gh release delete latest -y || true
+          git push origin :refs/tags/latest || true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create new release
+        run: |
+          gh release create latest "easyFLP/easyflp.exe" "easyFLP/easyflp-gui.exe" \
+            --title "Latest Build" \
+            --notes "This build was automated from ${{ github.sha }}. If you are unsure what to download, download **both of the .exe files** that are below. If you just want the non-GUI experience, you only need \`easyflp.exe\`."
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
