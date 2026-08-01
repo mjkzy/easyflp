@@ -186,8 +186,12 @@ fn fix_stretch_time(
    hand: one automation channel per distinct (channel, length, fades) clip shape, linked to
    the audio channel's volume, with a matching clip on a free playlist lane under every
    faded instance. All template bytes below are copied from a genuine 20.8.4.2576 save of
-   exactly this construction. */
-const FADE_TENSION: f32 = -0.280_755;
+   exactly this construction. The volume knob maps to output amplitude as knob^2.42 (its hint
+   reads 0 dB at 100% and -5.2 dB at the 0.78125 default), so a fade that is linear in amplitude
+   runs the knob through level*x^(1/2.42) and not through a straight line. It is written as
+   tension-0 points, dense near the silent end where that curve bends hardest. */
+const FADE_KNOB_GAMMA: f64 = 2.42;
+const FADE_GRID: [f64; 10] = [0.005, 0.015, 0.035, 0.07, 0.13, 0.22, 0.35, 0.52, 0.74, 1.0];
 const POINT_MID: u32 = 0x0200_0000;
 const POINT_LAST: u32 = 0xFF00_0000;
 const EA_HEADER: [u8; 17] = [
@@ -644,11 +648,39 @@ fn plan_fades(
     kept
 }
 
+fn fade_ramp(level: f64, span: f64, out: bool) -> Vec<(f64, f64, f32, u32)> {
+    let positions: Vec<f64> = if out {
+        FADE_GRID
+            .iter()
+            .rev()
+            .skip(1)
+            .map(|x| 1.0 - x)
+            .chain(std::iter::once(1.0))
+            .collect()
+    } else {
+        FADE_GRID.to_vec()
+    };
+    let last = positions.len() - 1;
+    let mut prev = 0.0;
+    let mut pts = Vec::with_capacity(positions.len());
+    for (i, &p) in positions.iter().enumerate() {
+        let delta = (p - prev) * span;
+        if i != last && delta < 0.01 {
+            continue;
+        }
+        let fraction = if out { 1.0 - p } else { p };
+        let value = level * fraction.powf(1.0 / FADE_KNOB_GAMMA);
+        pts.push((delta, value, 0.0, POINT_MID));
+        prev = p;
+    }
+    pts
+}
+
 fn fade_points(g: &FadeGroup) -> Vec<(f64, f64, f32, u32)> {
     let mut pts = Vec::new();
     if g.fade_in_beats > 0.0 {
         pts.push((0.0, 0.0, 0.0, 0));
-        pts.push((g.fade_in_beats, g.level, FADE_TENSION, POINT_MID));
+        pts.extend(fade_ramp(g.level, g.fade_in_beats, false));
     } else {
         pts.push((0.0, g.level, 0.0, 0));
     }
@@ -657,7 +689,7 @@ fn fade_points(g: &FadeGroup) -> Vec<(f64, f64, f32, u32)> {
         if hold > 1e-9 {
             pts.push((hold, g.level, 0.0, POINT_MID));
         }
-        pts.push((g.fade_out_beats, 0.0, FADE_TENSION, POINT_MID));
+        pts.extend(fade_ramp(g.level, g.fade_out_beats, true));
         /* zero-width final point: snaps the channel volume back to its knob value the
            instant the clip ends, so later un-faded clips of the same channel stay audible */
         pts.push((0.0, g.level, 0.0, POINT_LAST));
@@ -1370,6 +1402,46 @@ mod tests {
             .notes
             .iter()
             .any(|note| note.contains("emulated 1 clip fades")));
+    }
+
+    #[test]
+    fn fade_points_ramp_linearly_in_amplitude() {
+        let g = FadeGroup {
+            chan: 0,
+            len_ticks: 0,
+            fade_in_bits: 0,
+            fade_out_bits: 0,
+            auto_idx: 1,
+            lane: 0,
+            level: 0.78125,
+            colour: 0,
+            name: String::new(),
+            len_beats: 32.0,
+            fade_in_beats: 8.0,
+            fade_out_beats: 4.0,
+        };
+        let pts = fade_points(&g);
+
+        assert_eq!(pts[0].1, 0.0);
+        assert_eq!(pts[0].3, 0);
+        let restore = pts[pts.len() - 1];
+        assert_eq!(restore, (0.0, g.level, 0.0, POINT_LAST));
+        assert_eq!(pts[pts.len() - 2].1, 0.0);
+
+        assert!(pts.iter().all(|p| p.2 == 0.0), "{pts:?}");
+        let total: f64 = pts.iter().map(|p| p.0).sum();
+        assert!((total - g.len_beats).abs() < 1e-9, "deltas summed to {total}");
+
+        let exponent = 1.0 / FADE_KNOB_GAMMA;
+        let rise = &pts[1..=FADE_GRID.len()];
+        for (point, x) in rise.iter().zip(FADE_GRID) {
+            assert!((point.1 - g.level * x.powf(exponent)).abs() < 1e-12, "{point:?} at {x}");
+        }
+        assert!(rise.windows(2).all(|w| w[0].1 < w[1].1), "{rise:?}");
+
+        let fall = &pts[pts.len() - 1 - FADE_GRID.len()..pts.len() - 1];
+        assert!(fall.windows(2).all(|w| w[0].1 > w[1].1), "{fall:?}");
+        assert!((fall[0].1 - g.level * 0.74f64.powf(exponent)).abs() < 1e-12, "{fall:?}");
     }
 
     #[test]
