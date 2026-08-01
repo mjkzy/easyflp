@@ -22,7 +22,7 @@ Event encoding by opcode range: `0x00-0x3F` u8, `0x40-0x7F` u16le, `0x80-0xBF` u
 | `0x68` channel route (*25*) | u16, in the param block | `0x16` u8, same slot | rewrite in place; drop if `0x16` exists |
 | `0xD5` wrapper marker | 12 | 10 | rewrite first u32 |
 | `0xD7` channel blob | 168 bytes | 158 bytes | truncate (leading bytes agree) |
-| `0xD7` stretch time (offset 96) | f32 ticks (*25*) | u32, 1/768 bar | reinterpret and rescale (see below) |
+| `0xD7` stretch time (offset 96) | f32, 1/768 bar (*24.2*+) | u32, 1/768 bar | reinterpret f32 -> u32, same unit (see below) |
 | `0xE9` clip records | 60 B (*21-24*) / 80 B (*25*) | 32 B | keep bytes 0-31; emulate fades (see below) |
 | `0xEE` lane records | 70 bytes × 500 | 66 bytes × 500 | truncate each |
 | `0xEB` route table | 1 byte (*25*) | 127 bytes | pad with zeros |
@@ -40,9 +40,11 @@ The canonical `0xE1` table is a header record, then per strip 0..126: ten slot p
 
 ## 0xD7 sampler stretch time
 
-`0xD7` offset 96 holds the sampler "time stretching: time" value. *20.8* reads a `u32le` in units of 1/768 bar (PyFLP `LinearMusical`: bars×768 + steps×48, one unit = 5 ticks at the internal PPQ 960). *25* writes an `f32le` tick count (project PPQ) in the same four bytes.
+`0xD7` offset 96 holds the sampler "time stretching: time" value. Both versions use the same unit: 1/768 bar (PyFLP `LinearMusical`, bars×768 + steps×48 + ticks, 16 steps per bar, 48 ticks per step). Only the storage type differs. *20.8* stores a `u32le`. *24.2* and later store an `f32le` in the same four bytes. The survey pins the switch between build 24.1.1.4285, which still writes u32, and build 24.2.2.4597, which writes f32. The conversion is `u32 = round(f32)`. The project PPQ does not enter it.
 
-Left as-is, *20.8* reads the f32 bit pattern as a u32 (about 1.1e9), stretches the sample to millions of bars, and resizes every playlist clip of that channel to match. The converter rescales: `u32 = round(f32 × 192 / ppq)`. The two encodings never overlap: a real u32 stays below `0x1000000` for any real song, and an f32 of one tick or more has bits ≥ `0x3F800000`. The converter treats values ≥ `0x10000000` as f32.
+Evidence: a *25.1.3* project at PPQ 96 in 4/4 stores the f32 24576.0 on a channel whose Time knob shows 32:00:00 in *25*. 32 bars × 768 = 24576, so the stored number is the display unit. A tick count contradicts the display, because 24576 ticks at PPQ 96 is 64 bars. An earlier converter rescaled with `u32 = round(f32 × 192 / ppq)` and wrote 49152, and *20.8* showed 48:00:00 — the knob maximum, clamped. That formula came from a truth pair at PPQ 192, where one bar is 768 ticks. At that PPQ alone, the tick reading and the 1/768-bar reading give the same number.
+
+Left as-is, *20.8* reads the f32 bit pattern as a u32 (about 1.1e9), stretches the sample to millions of bars, and resizes every playlist clip of that channel to match. The two encodings never overlap: a real u32 stays below `0x1000000` for any real song, and an f32 of one unit or more has bits ≥ `0x3F800000`. The converter treats values ≥ `0x10000000` as f32.
 
 ## Clip fades (21+) and the channel-volume emulation
 

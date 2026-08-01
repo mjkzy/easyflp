@@ -29,16 +29,16 @@ const POST_FL20_OPS: [u8; 18] = [
 ];
 
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
-   (0x95/0xCC insert colour+name, 0xC1 pattern name, 0xEF lane name, 0xD0 legacy notes).
-   leftovers outside this set are reported, never deleted. */
-const FL20_KNOWN_OPS: [u8; 96] = [
+   (0x5F insert icon, 0x95/0xCC insert colour+name, 0xC1 pattern name, 0xEF lane name,
+   0xD0 legacy notes). leftovers outside this set are reported, never deleted. */
+const FL20_KNOWN_OPS: [u8; 97] = [
     0x00, 0x09, 0x0A, 0x0B, 0x11, 0x12, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
     0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x40, 0x41, 0x43, 0x45, 0x46, 0x47, 0x4A, 0x4B, 0x4C,
-    0x50, 0x53, 0x55, 0x56, 0x59, 0x61, 0x62, 0x63, 0x64, 0x80, 0x83, 0x84, 0x85, 0x8A, 0x8B,
-    0x8F, 0x90, 0x91, 0x92, 0x93, 0x95, 0x96, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA4, 0xC1,
-    0xC2, 0xC3, 0xC4, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCE, 0xCF, 0xD0, 0xD1, 0xD4, 0xD5,
-    0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDD, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE7, 0xE9, 0xEA,
-    0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1,
+    0x50, 0x53, 0x55, 0x56, 0x59, 0x5F, 0x61, 0x62, 0x63, 0x64, 0x80, 0x83, 0x84, 0x85, 0x8A,
+    0x8B, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x95, 0x96, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA4,
+    0xC1, 0xC2, 0xC3, 0xC4, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCE, 0xCF, 0xD0, 0xD1, 0xD4,
+    0xD5, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDD, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE7, 0xE9,
+    0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1,
 ];
 
 /* 20.8 writes a fixed 4697-record 0xE1 table: a header record, then per strip the ten slot pairs
@@ -141,11 +141,12 @@ fn canonical_pid(off: u16, pid: u8) -> bool {
         && matches!(pid, 192 | 193 | 194 | 208..=210 | 216..=218 | 224..=226 | 164..=168 | 190)
 }
 
-/* 20.8 stores the sampler stretch time (0xD7 offset 96) as u32 in 1/768-bar units.
-   25 writes an f32 tick count in the same four bytes. Legit u32 values stay far below
-   0x1000_0000 (349k bars), while an f32 for any tick count >= 1 has bits >= 0x3F80_0000,
-   so the bit pattern alone separates the two encodings. */
-fn fix_stretch_time(d7: &mut [u8], ppq: u16, fixed: &mut usize) {
+/* the sampler stretch time (0xD7 offset 96) uses the same 1/768-bar unit in both versions
+   (bars*768 + steps*48 + ticks). only the storage type changed: 20.8 stores u32, 25 stores
+   f32. the conversion is a reinterpretation, not a rescale — the project ppq does not enter
+   it. legit u32 values stay far below 0x1000_0000 (349k bars), while an f32 for any value
+   >= 1 has bits >= 0x3F80_0000, so the bit pattern alone separates the two encodings. */
+fn fix_stretch_time(d7: &mut [u8], fixed: &mut usize) {
     if d7.len() < 100 {
         return;
     }
@@ -153,11 +154,11 @@ fn fix_stretch_time(d7: &mut [u8], ppq: u16, fixed: &mut usize) {
     if raw < 0x1000_0000 {
         return;
     }
-    let ticks = f32::from_bits(raw);
-    if !ticks.is_finite() || ticks <= 0.0 || ticks >= 10_000_000.0 {
+    let units = f32::from_bits(raw);
+    if !units.is_finite() || units <= 0.0 || units >= 10_000_000.0 {
         return;
     }
-    let v = (ticks as f64 * 192.0 / ppq as f64).round() as u32;
+    let v = (units as f64).round() as u32;
     d7[96..100].copy_from_slice(&v.to_le_bytes());
     *fixed += 1;
 }
@@ -631,7 +632,7 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                 } else {
                     b.to_vec()
                 };
-                fix_stretch_time(&mut nb, src.ppq, &mut stretch_fixed);
+                fix_stretch_time(&mut nb, &mut stretch_fixed);
                 out.push(Event { op: op::CHANNEL_DECO, payload: Payload::Blob(nb) });
             }
             op::PLAYLIST => {
@@ -803,7 +804,7 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     );
     push(
         stretch_fixed,
-        format!("rewrote {stretch_fixed} sampler stretch times f32 ticks -> v20 units"),
+        format!("rewrote {stretch_fixed} sampler stretch times f32 -> u32"),
         &mut notes,
     );
     push(
