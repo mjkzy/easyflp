@@ -23,9 +23,9 @@ const FL20_REGISTRATION: [u8; 50] = [
    plus 0xAC (25's fixed-3-byte event). 0x68 is absent on purpose: it converts to 0x16 before
    deletion would apply. 0xD8 was here until two genuine 20.8.4.2576 saves proved it is a
    v20-era event (see FORMAT.md). */
-const POST_FL20_OPS: [u8; 18] = [
-    0x29, 0x2A, 0x2B, 0x2C, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x67, 0xA5, 0xA6, 0xA7, 0xA9, 0xAA,
-    0xAC, 0xF2, 0xF3,
+const POST_FL20_OPS: [u8; 22] = [
+    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x65, 0x67, 0xA5, 0xA6,
+    0xA7, 0xA8, 0xA9, 0xAA, 0xAC, 0xF2, 0xF3,
 ];
 
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
@@ -829,6 +829,10 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     let mut fades_emulated = 0usize;
     let mut end_trims_reconciled = 0usize;
     let mut controls_rebased = 0usize;
+    let mut pattern_markers_dropped = 0usize;
+    let mut pattern_marker_nondefault = false;
+    let mut in_pattern = false;
+    let mut in_marker_run = false;
     let mut current_channel = None;
     let mut current_plugin = String::new();
 
@@ -843,6 +847,45 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
             channels_inserted = true;
             for g in &fade_groups {
                 out.extend(fade_automation_events(g));
+            }
+        }
+        /* 21+ appends a default 4/4 time-signature marker to every pattern metadata block. 20.8
+           keeps markers in the arrangement only, and its pattern blocks hold no 0x94 run, so the
+           run is dropped here while arrangement markers pass through. */
+        if !POST_FL20_OPS.contains(&ev.op) {
+            match ev.op {
+                op::PATTERN_NEW => {
+                    in_pattern = true;
+                    in_marker_run = false;
+                }
+                op::CHANNEL_NEW | 0x63 => {
+                    in_pattern = false;
+                    in_marker_run = false;
+                }
+                _ => {}
+            }
+            if in_marker_run {
+                match ev.op {
+                    0x21 | 0x22 => {
+                        if ev.value() != Some(4) {
+                            pattern_marker_nondefault = true;
+                        }
+                        continue;
+                    }
+                    0xCD => {
+                        in_marker_run = false;
+                        continue;
+                    }
+                    _ => in_marker_run = false,
+                }
+            }
+            if in_pattern && ev.op == 0x94 {
+                in_marker_run = true;
+                pattern_markers_dropped += 1;
+                if ev.value() != Some(0x0800_0000) {
+                    pattern_marker_nondefault = true;
+                }
+                continue;
             }
         }
         match ev.op {
@@ -1150,6 +1193,17 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
         ),
         &mut notes,
     );
+    push(
+        pattern_markers_dropped,
+        format!("removed {pattern_markers_dropped} pattern time-signature markers (20.8 stores none)"),
+        &mut notes,
+    );
+    if pattern_marker_nondefault {
+        warnings.push(
+            "a removed pattern time-signature marker was not the default 4/4 — the pattern time signature is lost"
+                .into(),
+        );
+    }
     push(
         fades_emulated,
         format!(
@@ -1498,6 +1552,99 @@ mod tests {
             .notes
             .iter()
             .any(|note| note == "wrapper marker 12 -> 10 on 1 plugins"));
+    }
+
+    fn marker_flp(body: Vec<Event>) -> Flp {
+        let mut events = vec![Event {
+            op: op::VERSION,
+            payload: Payload::Blob(b"25.1.3.4922\0".to_vec()),
+        }];
+        events.extend(body);
+        Flp {
+            format: 0,
+            n_channels: 1,
+            ppq: 96,
+            header_raw: vec![0, 0, 1, 0, 96, 0],
+            events,
+            trailing: Vec::new(),
+        }
+    }
+
+    fn marker_run(numerator: u8, denominator: u8) -> Vec<Event> {
+        vec![
+            Event { op: 0x94, payload: Payload::U32(0x0800_0000) },
+            Event { op: 0x21, payload: Payload::U8(numerator) },
+            Event { op: 0x22, payload: Payload::U8(denominator) },
+            Event { op: 0x2E, payload: Payload::U8(0) },
+            Event { op: 0x2D, payload: Payload::U8(0) },
+            Event { op: 0xA8, payload: Payload::U32(0) },
+            Event { op: 0x65, payload: Payload::U16(0) },
+            Event {
+                op: 0xCD,
+                payload: Payload::Blob(vec![0x34, 0, 0x2F, 0, 0x34, 0, 0, 0]),
+            },
+        ]
+    }
+
+    fn converted_ops(flp: &Flp) -> (Vec<u8>, Outcome) {
+        let outcome = to_fl20(flp).unwrap();
+        let ops = outcome.flp.events.iter().map(|event| event.op).collect();
+        (ops, outcome)
+    }
+
+    #[test]
+    fn drops_pattern_time_signature_marker_run() {
+        let mut body = vec![
+            Event { op: op::PATTERN_NEW, payload: Payload::U16(1) },
+            Event { op: 0x96, payload: Payload::U32(0x4000_0000) },
+            Event { op: 0x9D, payload: Payload::U32(0xFFFF_FFFF) },
+            Event { op: 0x9E, payload: Payload::U32(0xFFFF_FFFF) },
+        ];
+        body.extend(marker_run(4, 4));
+        body.push(Event { op: 0xA4, payload: Payload::U32(0) });
+
+        let (ops, outcome) = converted_ops(&marker_flp(body));
+        assert_eq!(ops, vec![op::VERSION, op::PATTERN_NEW, 0x96, 0x9D, 0x9E, 0xA4]);
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note == "removed 1 pattern time-signature markers (20.8 stores none)"));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    #[test]
+    fn keeps_arrangement_time_signature_marker() {
+        let mut body = vec![
+            Event { op: op::PATTERN_NEW, payload: Payload::U16(1) },
+            Event { op: 0xA4, payload: Payload::U32(0) },
+            Event { op: 0x63, payload: Payload::U16(0) },
+        ];
+        body.extend(marker_run(4, 4));
+
+        let (ops, outcome) = converted_ops(&marker_flp(body));
+        assert_eq!(
+            ops,
+            vec![op::VERSION, op::PATTERN_NEW, 0xA4, 0x63, 0x94, 0x21, 0x22, 0xCD]
+        );
+        assert!(!outcome.notes.iter().any(|note| note.starts_with("removed")));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    #[test]
+    fn warns_about_dropped_non_default_pattern_marker() {
+        let mut body = vec![Event { op: op::PATTERN_NEW, payload: Payload::U16(1) }];
+        body.extend(marker_run(3, 4));
+        body.push(Event { op: 0xA4, payload: Payload::U32(0) });
+
+        let (ops, outcome) = converted_ops(&marker_flp(body));
+        assert_eq!(ops, vec![op::VERSION, op::PATTERN_NEW, 0xA4]);
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "a removed pattern time-signature marker was not the default 4/4 — the pattern time signature is lost"
+                    .to_string()
+            ]
+        );
     }
 
     #[test]

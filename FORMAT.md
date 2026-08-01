@@ -34,9 +34,10 @@ Event encoding by opcode range: `0x00-0x3F` u8, `0x40-0x7F` u16le, `0x80-0xBF` u
 | `0xE3` link destination (offset 10) | base `0x7000` (*25*) | base `0x2000` | rebase, stride `0x40` |
 | `0xE1` table shape | tail records dropped | 4697 records | rebuild canonical table |
 | `0x85` selected insert | out-of-range values occur | ≤ 126 | clamp to 126 |
+| pattern time marker | `0x94` run inside the pattern block | absent | delete the run (see below) |
 | stream tail | `0xE1 0x85 0xF3 0x2F` | `0xE1 0x85` | `0xF3`/`0x2F` are in the delete set |
 
-The deleted event set is the opcode difference between the two truth files, plus `0xAC`, minus `0xD8`: `0x29 0x2A 0x2B 0x2C 0x2F 0x30 0x31 0x32 0x33 0x67 0xA5 0xA6 0xA7 0xA9 0xAA 0xAC 0xF2 0xF3`. Two genuine *20.8* saves proved that *20.8* writes `0xD8` (see below).
+The deleted event set is the opcode difference between the two truth files, plus `0xAC`, minus `0xD8`, plus the four marker sub-records: `0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x65 0x67 0xA5 0xA6 0xA7 0xA8 0xA9 0xAA 0xAC 0xF2 0xF3`. Two genuine *20.8* saves proved that *20.8* writes `0xD8` (see below).
 
 *25* addresses the mixer "current strip" as strip 501 (`0xE1` target `0xED40`). *20.8* addresses it as strip 126. The rebase clamps strip indexes above 126 to 126.
 
@@ -83,6 +84,17 @@ v20 has no fade fields. The converter emulates each distinct (channel, length, f
 - **Playlist record**: same pos/length as the audio clip, item index = automation channel, bytes 16-23 = `78 00 40 00 40 64 80 80`, f32 0.0 at 24, f32 length-in-beats at 28.
 
 The automation value must equal the channel's own `0xDB` volume (default 10000/12800 = 0.78125) — automation replaces the knob, it does not scale it. Fade ms convert to beats through the project tempo (`0x9C` / 1000).
+
+## Pattern time markers
+
+A time marker is a `0x94` position, then `0x21` numerator, `0x22` denominator, and `0xCD` name. *21* and later add four sub-records to each marker: `0x2E`, `0x2D`, `0xA8`, and `0x65`.
+
+*21* and later write one marker into every pattern metadata block. The block shape is `0x41` pattern number, optional `0xC1` name, `0x96` colour, `0x9D`, `0x9E`, then the marker run, then `0xA4`. The marker is auto-generated: five genuine *24.2* and *25.1* saves all hold position 0, flag `0x08000000`, 4/4, and the name "4/4". The four sub-records are zero in all of them.
+
+*20.8* writes the pattern block as `0x41`, optional `0xC1`, `0x96`, `0x9D`, `0x9E`, `0xA4`. A genuine *20.8.4.2576* save with 52 pattern blocks and 2 time markers holds no `0x94` run in any pattern block. Its markers sit in the arrangement, after the `0xE9` playlist event, as `0x94 0x21 0x22 0xCD`.
+
+The rules follow from that evidence. Delete `0x2D`, `0x2E`, `0x65`, and `0xA8` everywhere. Drop the whole marker run inside a pattern block. Keep arrangement markers. A dropped run that is not the default 4/4 loses a pattern time signature, so the converter warns.
+
 ## Version and structure are independent
 
 The program's loaders select nothing from the claimed `0xC7` version. *24* rejects 66-byte lane records in a file that claims *21*, and accepts 70-byte lanes in the same file. A converter must rewrite structures, not headers.
