@@ -34,7 +34,9 @@ Cargo lives at `%USERPROFILE%\.cargo\bin`; the .bat scripts add it to PATH.
   files). Extend it only with byte-level evidence from real program saves.
 - Unknown events that survive conversion are warned about, never silently deleted.
 - Wrapper records (`0xD5` sub-records, `0xD4` field B) are plugin-format dependent, not
-  version dependent. The converter must carry them through unchanged (marker aside).
+  version dependent. The converter must carry them through unchanged. The one exception is
+  the state version at the start of a "Fruity Wrapper" `0xD5`; a native plugin keeps its own
+  state header in those bytes.
 
 ## Comments — the rule
 

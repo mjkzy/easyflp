@@ -2,6 +2,10 @@
 
 Plugin wrapper records (`0xD5` records 30/32/50/51/52/57, and `0xD4` field B) are byte-identical across versions. They depend on the plugin format, not the program version. The converter carries them through unchanged.
 
+One record is version dependent: the `0xD5` state of the VST host plugin "Fruity Wrapper". Its first `u32` is a state version, 12 in *25* and 10 in *20.8*. Every `0xD5` belongs to the plugin that the preceding `0xC9` internal name gives. The converter rewrites the first `u32` only for a "Fruity Wrapper" record.
+
+A native plugin keeps its own state header in the same four bytes. The observed first `u32` values are plugin data, not a version: Fruity Love Philter 786435, Maximus 983043, Gross Beat 524291, Edison 851971, Fruity Fast Dist 171, Fruity Delay Bank 16, Fruity Parametric EQ 2 with 8, Fruity Limiter 7, Soundgoodizer 3, Fruity Compressor 2, Fruity Mute 2 with 1, Fruity Delay 2 with 0. Fruity Soft Clipper writes an 8-byte record of two parameters, 90 and 127. A clamp of these values corrupts the plugin state and the *20.8* loader stops.
+
 ## File envelope
 
 ```
@@ -20,10 +24,10 @@ Event encoding by opcode range: `0x00-0x3F` u8, `0x40-0x7F` u16le, `0x80-0xBF` u
 | `0xC8` registration | 10 bytes | 50 bytes | replace with the *20.8* blob |
 | post-20 events | present | absent | delete (see set below) |
 | `0x68` channel route (*25*) | u16, in the param block | `0x16` u8, same slot | rewrite in place; drop if `0x16` exists |
-| `0xD5` wrapper marker | 12 | 10 | rewrite first u32 |
+| `0xD5` wrapper marker, "Fruity Wrapper" only | 12 | 10 | rewrite first u32; other plugins pass through |
 | `0xD7` channel blob | 168 bytes | 158 bytes | truncate (leading bytes agree) |
 | `0xD7` stretch time (offset 96) | f32, 1/768 bar (*24.2*+) | u32, 1/768 bar | reinterpret f32 -> u32, same unit (see below) |
-| `0xE9` clip records | 60 B (*21-24*) / 80 B (*25*) | 32 B | keep bytes 0-31; emulate fades (see below) |
+| `0xE9` clip records | 60 B (*21-24*) / 80 B (*25*) | 32 B | keep positions, lengths, and trims; reconcile end trims; move scale to `0xD7`; emulate fades |
 | `0xEE` lane records | 70 bytes × 500 | 66 bytes × 500 | truncate each |
 | `0xEB` route table | 1 byte (*25*) | 127 bytes | pad with zeros |
 | `0xE1` param targets | base `0x7000` (*25*) | base `0x2000` | rebase, stride `0x40` |
@@ -46,9 +50,29 @@ Evidence: a *25.1.3* project at PPQ 96 in 4/4 stores the f32 24576.0 on a channe
 
 Left as-is, *20.8* reads the f32 bit pattern as a u32 (about 1.1e9), stretches the sample to millions of bars, and resizes every playlist clip of that channel to match. The two encodings never overlap: a real u32 stays below `0x1000000` for any real song, and an f32 of one unit or more has bits ≥ `0x3F800000`. The converter treats values ≥ `0x10000000` as f32.
 
+## 0xE9 clip stretch scale
+
+*25* stores an f64 stretch scale at offset 64 of each clip record. *20.8* has no per-clip scale field.
+
+When all clips of a channel share one scale, fold the scale into the channel: multiply the `0xD7` stretch time by it. Keep clip positions, lengths, and trims unchanged. *20.8* derives clip playback from the channel stretch time (see the recompute below), so the fold gives the same sound.
+
+Do not retime clip lengths instead. A new length moves the clip's right edge, and *20.8* shows the wrong source segment. Use that fallback only when clips of one channel carry different scales.
+
+## 0xE9 audio clip trims and the v20 length recompute
+
+Record offsets 24 and 28 hold `f32` start and end trims, in source-sample milliseconds. Every version from *20* to *25* keeps this meaning. The converter copies both values unchanged.
+
+*20.8* recomputes each audio clip length at load time, when the clip's channel has a nonzero sampler stretch time. The rule is `len = round((end - start) / (R × tick_ms))`, with `R = sample_ms / stretched_ms` and `tick_ms = 60000 / (tempo × ppq)`. Channels without a stretch time keep the stored lengths.
+
+This recompute is why the scale fold above works: the folded stretch time gives the same effective R as the *25* per-clip scale.
+
+The recompute also means a clip changes length on load when its trim window disagrees with its stored length. The converter reconciles end trims so the recompute lands on the stored length. It estimates R per stretched channel from that channel's own clips. A point estimate `window / (len × tick)` is biased, because the stored length is a rounded value. Each clip instead bounds R to the interval `(window / ((len + 0.5) × tick), window / ((len - 0.5) × tick))`. Any R inside that interval makes the recompute return the stored length. The estimate is the midpoint of the deepest interval overlap, with a minimum overlap of two clips.
+
+Where the window is too long, *20.8* lengthens the clip, and the converter rewrites the end trim. Where the window is too short, *20.8* shortens the clip. The converter only warns there, because the sample data to extend the clip does not exist. Channels with fewer than two usable clips pass through unchanged.
+
 ## Clip fades (21+) and the channel-volume emulation
 
-The 80-byte clip record tail (*25*): u32 clip uid at 32, f32 fade-in ms at 40, f32 fade-out ms at 44, f32 gain at 52 (1.0 default), u32 fade flags at 56 (2 observed on faded clips), f64 stretch scale at 64. Offsets 24-31 keep the v20 meaning (f32 start/end trim, ms for audio clips, -1 = untrimmed).
+The 80-byte clip record tail (*25*): u32 clip uid at 32, f32 fade-in ms at 36, f32 fade-out ms at 44, f32 gain at 52, u32 fade flags at 56, and f64 stretch scale at 64. Offsets 24-31 keep the v20 trim meaning.
 
 v20 has no fade fields. The converter emulates each distinct (channel, length, fade-in, fade-out) clip shape with one automation channel linked to the audio channel's volume, plus one playlist clip per faded instance on a free lane. All template bytes come from a genuine *20.8.4.2576* save of exactly this construction:
 

@@ -49,7 +49,8 @@ tldr:
 
 this is a **work in progress** project, and may need additional research for more detailed opcodes and information within a project file.
 
-- *25* per-clip stretch scale has no *20.8* equivalent (or i haven't studied it enough yet 😒). the converter drops it and warns for now
+- folds a consistent *25* per-clip stretch scale into the channel's *20.8* stretch time
+- v20 recomputes stretched clip lengths from the clip trims on load, so the converter aligns the trim window to make that recompute land on the source length
 - the parser must reproduce the input byte exact before conversion is allowed. a file that fails this check loads as information only.
 
 ## contributing

@@ -29,13 +29,14 @@ const POST_FL20_OPS: [u8; 18] = [
 ];
 
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
-   (0x5F insert icon, 0x95/0xCC insert colour+name, 0xC1 pattern name, 0xEF lane name,
-   0xD0 legacy notes). leftovers outside this set are reported, never deleted. */
-const FL20_KNOWN_OPS: [u8; 97] = [
+   (0x5F insert icon, 0x87 sampler root note, 0x95/0xCC insert colour+name, 0xC1 pattern name,
+   0xEF lane name, 0xD0 legacy notes). leftovers outside this set are reported, never deleted. */
+const FL20_KNOWN_OPS: [u8; 98] = [
     0x00, 0x09, 0x0A, 0x0B, 0x11, 0x12, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
     0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x40, 0x41, 0x43, 0x45, 0x46, 0x47, 0x4A, 0x4B, 0x4C,
-    0x50, 0x53, 0x55, 0x56, 0x59, 0x5F, 0x61, 0x62, 0x63, 0x64, 0x80, 0x83, 0x84, 0x85, 0x8A,
-    0x8B, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x95, 0x96, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA4,
+    0x50, 0x53, 0x55, 0x56, 0x59, 0x5F, 0x61, 0x62, 0x63, 0x64, 0x80, 0x83, 0x84, 0x85, 0x87,
+    0x8A, 0x8B, 0x8F, 0x90, 0x91, 0x92, 0x93, 0x95, 0x96, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F,
+    0xA4,
     0xC1, 0xC2, 0xC3, 0xC4, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCE, 0xCF, 0xD0, 0xD1, 0xD4,
     0xD5, 0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDD, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE7, 0xE9,
     0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1,
@@ -146,24 +147,41 @@ fn canonical_pid(off: u16, pid: u8) -> bool {
    f32. the conversion is a reinterpretation, not a rescale — the project ppq does not enter
    it. legit u32 values stay far below 0x1000_0000 (349k bars), while an f32 for any value
    >= 1 has bits >= 0x3F80_0000, so the bit pattern alone separates the two encodings. */
-fn fix_stretch_time(d7: &mut [u8], fixed: &mut usize) {
+fn stretch_time_units(d7: &[u8]) -> Option<f64> {
     if d7.len() < 100 {
-        return;
+        return None;
     }
     let raw = u32::from_le_bytes(d7[96..100].try_into().unwrap());
-    if raw < 0x1000_0000 {
-        return;
-    }
-    let units = f32::from_bits(raw);
-    if !units.is_finite() || units <= 0.0 || units >= 10_000_000.0 {
-        return;
-    }
-    let v = (units as f64).round() as u32;
-    d7[96..100].copy_from_slice(&v.to_le_bytes());
-    *fixed += 1;
+    let units = if raw < 0x1000_0000 {
+        raw as f64
+    } else {
+        f32::from_bits(raw) as f64
+    };
+    (units.is_finite() && units > 0.0 && units < 10_000_000.0).then_some(units)
 }
 
-/* 21+ audio clips carry fade-in/fade-out times (f32 milliseconds at record offsets 40/44)
+fn fix_stretch_time(
+    d7: &mut [u8],
+    scale: Option<f64>,
+    fixed: &mut usize,
+    scales_folded: &mut usize,
+) {
+    let Some(mut units) = stretch_time_units(d7) else {
+        return;
+    };
+    let raw = u32::from_le_bytes(d7[96..100].try_into().unwrap());
+    if raw >= 0x1000_0000 {
+        *fixed += 1;
+    }
+    if let Some(scale) = scale {
+        units *= scale;
+        *scales_folded += 1;
+    }
+    let v = units.round() as u32;
+    d7[96..100].copy_from_slice(&v.to_le_bytes());
+}
+
+/* 21+ audio clips carry fade-in/fade-out times (f32 milliseconds at record offsets 36/44)
    that v20 has no field for. The fades are emulated the way a v20 user would build them by
    hand: one automation channel per distinct (channel, length, fades) clip shape, linked to
    the audio channel's volume, with a matching clip on a free playlist lane under every
@@ -256,12 +274,246 @@ struct FadeGroup {
     fade_out_beats: f64,
 }
 
+const CLIP_FADE_IN_OFFSET: usize = 36;
+const CLIP_FADE_OUT_OFFSET: usize = 44;
+const CLIP_STRETCH_SCALE_OFFSET: usize = 64;
+
 fn fade_time(bits: u32) -> Option<f32> {
     let ms = f32::from_bits(bits);
     (ms.is_finite() && ms > 0.05 && ms < 600_000.0).then_some(ms)
 }
 
-fn plan_fades(src: &Flp, clip_size: usize, warnings: &mut Vec<String>) -> Vec<FadeGroup> {
+fn clip_fade_bits(rec: &[u8]) -> (u32, u32) {
+    (
+        u32::from_le_bytes(
+            rec[CLIP_FADE_IN_OFFSET..CLIP_FADE_IN_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        ),
+        u32::from_le_bytes(
+            rec[CLIP_FADE_OUT_OFFSET..CLIP_FADE_OUT_OFFSET + 4]
+                .try_into()
+                .unwrap(),
+        ),
+    )
+}
+
+fn clip_stretch_scale(rec: &[u8], clip_size: usize) -> Option<f64> {
+    if clip_size < 80 {
+        return None;
+    }
+    let scale = f64::from_le_bytes(
+        rec[CLIP_STRETCH_SCALE_OFFSET..CLIP_STRETCH_SCALE_OFFSET + 8]
+            .try_into()
+            .unwrap(),
+    );
+    (scale.is_finite() && scale > 0.0).then_some(scale)
+}
+
+fn channels_with_stretch_time(src: &Flp) -> Vec<bool> {
+    let mut flags = vec![false; usize::from(src.n_channels)];
+    let mut channel = None;
+    for event in &src.events {
+        match event.op {
+            op::CHANNEL_NEW => channel = event.value().map(|value| value as usize),
+            op::CHANNEL_DECO => {
+                if let (Some(channel), Some(d7)) = (channel, event.blob()) {
+                    if let Some(slot) = flags.get_mut(channel) {
+                        *slot = stretch_time_units(d7).is_some();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    flags
+}
+
+fn channel_stretch_scales(
+    src: &Flp,
+    clip_size: usize,
+    warnings: &mut Vec<String>,
+) -> Vec<Option<f64>> {
+    let mut observed: Vec<Option<f64>> = vec![None; usize::from(src.n_channels)];
+    let mut conflicts = vec![false; observed.len()];
+    for event in src.events.iter().filter(|event| event.op == op::PLAYLIST) {
+        let Some(blob) = event.blob() else { continue };
+        for rec in blob.chunks_exact(clip_size) {
+            let channel = usize::from(u16::from_le_bytes([rec[6], rec[7]]));
+            let Some(slot) = observed.get_mut(channel) else {
+                continue;
+            };
+            let Some(scale) = clip_stretch_scale(rec, clip_size) else {
+                continue;
+            };
+            if let Some(previous) = *slot {
+                if (previous - scale).abs() > 1e-9 {
+                    conflicts[channel] = true;
+                }
+            } else {
+                *slot = Some(scale);
+            }
+        }
+    }
+
+    let has_stretch_time = channels_with_stretch_time(src);
+
+    for channel in 0..observed.len() {
+        let unity = observed[channel].is_some_and(|scale| (scale - 1.0).abs() <= 1e-12);
+        if conflicts[channel] {
+            observed[channel] = None;
+            warnings.push(format!(
+                "channel {channel} uses multiple v25 clip stretch scales; retimed its clips individually"
+            ));
+        } else if unity {
+            observed[channel] = None;
+        } else if observed[channel].is_some() && !has_stretch_time[channel] {
+            observed[channel] = None;
+            warnings.push(format!(
+                "channel {channel} has a v25 clip stretch scale without a sampler stretch time; retimed its clips individually"
+            ));
+        }
+    }
+    observed
+}
+
+fn fl20_clip_length(
+    rec: &[u8],
+    clip_size: usize,
+    channel_scales: &[Option<f64>],
+) -> (u32, bool) {
+    let len = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+    let channel = usize::from(u16::from_le_bytes([rec[6], rec[7]]));
+    if channel_scales.get(channel).is_some_and(Option::is_some) {
+        return (len, false);
+    }
+
+    let Some(scale) = clip_stretch_scale(rec, clip_size) else {
+        return (len, false);
+    };
+    if (scale - 1.0).abs() <= 1e-12 {
+        return (len, false);
+    }
+
+    let minimum = u32::from(len > 0) as f64;
+    let converted = (len as f64 / scale).floor().clamp(minimum, u32::MAX as f64) as u32;
+    (converted, true)
+}
+
+const CLIP_START_TRIM_OFFSET: usize = 24;
+const CLIP_END_TRIM_OFFSET: usize = 28;
+
+fn tick_milliseconds(src: &Flp) -> Option<f64> {
+    let bpm = src
+        .events
+        .iter()
+        .find(|event| event.op == op::TEMPO)
+        .and_then(Event::value)? as f64
+        / 1000.0;
+    (bpm > 0.0 && src.ppq > 0).then(|| 60_000.0 / (bpm * f64::from(src.ppq)))
+}
+
+/* the trims at record offsets 24/28 are milliseconds into the source sample, not ticks, in
+   every version from 20 through 25. they are carried through untouched. */
+fn clip_trim_window(
+    rec: &[u8],
+    clip_size: usize,
+    channel_scales: &[Option<f64>],
+) -> Option<(f64, f64, u32)> {
+    let (len, _) = fl20_clip_length(rec, clip_size, channel_scales);
+    if len == 0 {
+        return None;
+    }
+    let read = |off: usize| f64::from(f32::from_le_bytes(rec[off..off + 4].try_into().unwrap()));
+    let start = read(CLIP_START_TRIM_OFFSET);
+    let end = read(CLIP_END_TRIM_OFFSET);
+    if !start.is_finite() || !end.is_finite() {
+        return None;
+    }
+    (end - start > 0.0).then_some((start, end - start, len))
+}
+
+/* v20.8 recomputes every audio clip length on load when the clip's channel has a nonzero sampler
+   stretch time: len = round((end_ms - start_ms) / (R * tick_ms)), with R the source sample length
+   divided by its stretched length. R lives in the sample, not the project, so it is estimated per
+   channel from the channel's own clips. point estimates (window/len ratios) are biased by the
+   rounding phase of the stored lengths — the program rounds len up or down, so every ratio sits
+   off R to one side. instead, each clip constrains R to the open interval
+   (window/((len+0.5)*tick), window/((len-0.5)*tick)): any R inside makes the recompute land back
+   on the stored length. the midpoint of the deepest interval overlap is the estimate; clips whose
+   interval misses it are exactly the ones v20 would resize. */
+fn channel_playback_ratios(
+    src: &Flp,
+    clip_size: usize,
+    channel_scales: &[Option<f64>],
+    tick_ms: f64,
+) -> Vec<Option<f64>> {
+    let stretched = channels_with_stretch_time(src);
+    let mut observed: Vec<Vec<(f64, f64)>> = vec![Vec::new(); stretched.len()];
+    for event in src.events.iter().filter(|event| event.op == op::PLAYLIST) {
+        let Some(blob) = event.blob() else { continue };
+        for rec in blob.chunks_exact(clip_size) {
+            let channel = u16::from_le_bytes([rec[6], rec[7]]);
+            if channel >= 0x5000 {
+                continue;
+            }
+            let Some(slot) = observed.get_mut(usize::from(channel)) else {
+                continue;
+            };
+            let Some((_, window, len)) = clip_trim_window(rec, clip_size, channel_scales) else {
+                continue;
+            };
+            slot.push((window, f64::from(len)));
+        }
+    }
+
+    observed
+        .into_iter()
+        .zip(stretched)
+        .map(|(clips, stretched)| {
+            if !stretched || clips.len() < 2 {
+                return None;
+            }
+            let mut bounds: Vec<(f64, i32)> = Vec::with_capacity(clips.len() * 2);
+            for (window, len) in &clips {
+                let lo = window / ((len + 0.5) * tick_ms);
+                let hi = window / ((len - 0.5).max(0.5) * tick_ms);
+                if lo.is_finite() && hi.is_finite() && lo > 0.0 && hi > lo {
+                    bounds.push((lo, 1));
+                    bounds.push((hi, -1));
+                }
+            }
+            bounds.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+            let (mut depth, mut best, mut lo, mut span) = (0i32, 0i32, 0.0f64, None);
+            for (edge, step) in bounds {
+                if step > 0 {
+                    depth += step;
+                    if depth > best {
+                        best = depth;
+                        lo = edge;
+                        span = None;
+                    }
+                } else {
+                    if depth == best && span.is_none() {
+                        span = Some((lo, edge));
+                    }
+                    depth += step;
+                }
+            }
+            (best >= 2)
+                .then_some(span)
+                .flatten()
+                .map(|(lo, hi)| (lo + hi) / 2.0)
+        })
+        .collect()
+}
+
+fn plan_fades(
+    src: &Flp,
+    clip_size: usize,
+    channel_scales: &[Option<f64>],
+    warnings: &mut Vec<String>,
+) -> Vec<FadeGroup> {
     struct ChanMeta {
         vol: u32,
         colour: u32,
@@ -325,13 +577,12 @@ fn plan_fades(src: &Flp, clip_size: usize, warnings: &mut Vec<String>) -> Vec<Fa
             if chan >= 0x5000 || usize::from(chan) >= chans.len() {
                 continue;
             }
-            let fi = u32::from_le_bytes(rec[40..44].try_into().unwrap());
-            let fo = u32::from_le_bytes(rec[44..48].try_into().unwrap());
+            let (fi, fo) = clip_fade_bits(rec);
             let (fi_ms, fo_ms) = (fade_time(fi), fade_time(fo));
             if fi_ms.is_none() && fo_ms.is_none() {
                 continue;
             }
-            let len_ticks = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+            let (len_ticks, _) = fl20_clip_length(rec, clip_size, channel_scales);
             let fi = fi_ms.map_or(0, |_| fi);
             let fo = fo_ms.map_or(0, |_| fo);
             if groups.iter().any(|g| {
@@ -502,7 +753,7 @@ fn fade_clip_record(g: &FadeGroup, src_rec: &[u8]) -> [u8; 32] {
     let mut r = [0u8; 32];
     r[0..6].copy_from_slice(&src_rec[0..6]);
     r[6..8].copy_from_slice(&g.auto_idx.to_le_bytes());
-    r[8..12].copy_from_slice(&src_rec[8..12]);
+    r[8..12].copy_from_slice(&g.len_ticks.to_le_bytes());
     r[12..16].copy_from_slice(&g.lane.to_le_bytes());
     r[16..24].copy_from_slice(&[0x78, 0x00, 0x40, 0x00, 0x40, 0x64, 0x80, 0x80]);
     r[28..32].copy_from_slice(&(g.len_beats as f32).to_le_bytes());
@@ -545,8 +796,14 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     let mut warnings = Vec::new();
     let mut out: Vec<Event> = Vec::with_capacity(src.events.len());
 
+    let channel_scales = channel_stretch_scales(src, clip_size, &mut warnings);
+    let tick_ms = (clip_size >= 60).then(|| tick_milliseconds(src)).flatten();
+    let end_trim_ratios = match tick_ms {
+        Some(tick) => channel_playback_ratios(src, clip_size, &channel_scales, tick),
+        None => Vec::new(),
+    };
     let fade_groups = if clip_size >= 60 {
-        plan_fades(src, clip_size, &mut warnings)
+        plan_fades(src, clip_size, &channel_scales, &mut warnings)
     } else {
         Vec::new()
     };
@@ -566,9 +823,14 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     let mut params_rebased = 0usize;
     let mut links_rebased = 0usize;
     let mut e1_rebuilt = 0usize;
-    let mut stretch_lost = 0usize;
+    let mut clip_scales_applied = 0usize;
+    let mut channel_scales_folded = 0usize;
     let mut stretch_fixed = 0usize;
     let mut fades_emulated = 0usize;
+    let mut end_trims_reconciled = 0usize;
+    let mut controls_rebased = 0usize;
+    let mut current_channel = None;
+    let mut current_plugin = String::new();
 
     for ev in &src.events {
         if ev.op == op::CHANNEL_NEW && !links_inserted {
@@ -587,6 +849,7 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
             o if POST_FL20_OPS.contains(&o) => deleted += 1,
             op::CHANNEL_NEW => {
                 chan_idx += 1;
+                current_channel = ev.value().map(|value| value as usize);
                 out.push(ev.clone());
             }
             op::CHANNEL_ROUTE_FL25 => {
@@ -613,9 +876,17 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                 op: 0x85,
                 payload: Payload::U32(ev.value().unwrap_or(126).min(126)),
             }),
+            op::PLUGIN_INTERNAL_NAME => {
+                current_plugin = ev.blob().map(crate::flp::utf16z).unwrap_or_default();
+                out.push(ev.clone());
+            }
+            /* only the VST host's 0xD5 opens with a state version (12 in 25, 10 in 20.8). a native
+               plugin's first u32 is its own state header — 786435 for Fruity Love Philter, 171 for
+               Fruity Fast Dist — and clamping it corrupts the state. the owner is the plugin named
+               by the preceding 0xC9. */
             op::WRAPPER => {
                 let mut b = ev.blob().ok_or("0xD5 without blob payload")?.to_vec();
-                if b.len() >= 4 {
+                if current_plugin == "Fruity Wrapper" && b.len() >= 4 {
                     let marker = u32::from_le_bytes(b[0..4].try_into().unwrap());
                     if marker > 10 {
                         b[0..4].copy_from_slice(&10u32.to_le_bytes());
@@ -632,7 +903,16 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                 } else {
                     b.to_vec()
                 };
-                fix_stretch_time(&mut nb, &mut stretch_fixed);
+                let scale = current_channel
+                    .and_then(|channel| channel_scales.get(channel))
+                    .copied()
+                    .flatten();
+                fix_stretch_time(
+                    &mut nb,
+                    scale,
+                    &mut stretch_fixed,
+                    &mut channel_scales_folded,
+                );
                 out.push(Event { op: op::CHANNEL_DECO, payload: Payload::Blob(nb) });
             }
             op::PLAYLIST => {
@@ -648,19 +928,42 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                     }
                     let mut nb = Vec::with_capacity(b.len() / clip_size * 32);
                     for rec in b.chunks_exact(clip_size) {
-                        nb.extend_from_slice(&rec[..32]);
-                        clips_converted += 1;
-                        if clip_size == 80 {
-                            let scale =
-                                f64::from_le_bytes(rec[64..72].try_into().unwrap());
-                            if scale != 0.0 && (scale - 1.0).abs() > 1e-9 {
-                                stretch_lost += 1;
+                        let (len, scale_applied) =
+                            fl20_clip_length(rec, clip_size, &channel_scales);
+                        let chan = u16::from_le_bytes([rec[6], rec[7]]);
+                        let mut converted = rec[..32].to_vec();
+                        converted[8..12].copy_from_slice(&len.to_le_bytes());
+                        if let (Some(tick), Some(ratio)) = (
+                            tick_ms,
+                            end_trim_ratios.get(usize::from(chan)).copied().flatten(),
+                        ) {
+                            if let Some((start, window, final_len)) =
+                                clip_trim_window(rec, clip_size, &channel_scales)
+                            {
+                                let implied = window / (ratio * tick);
+                                let final_len = f64::from(final_len);
+                                if implied.round() != final_len {
+                                    if implied > final_len {
+                                        let end = start + final_len * ratio * tick;
+                                        converted[CLIP_END_TRIM_OFFSET..CLIP_END_TRIM_OFFSET + 4]
+                                            .copy_from_slice(&(end as f32).to_le_bytes());
+                                        end_trims_reconciled += 1;
+                                    } else if implied < final_len - 0.5 {
+                                        let pos =
+                                            u32::from_le_bytes(rec[0..4].try_into().unwrap());
+                                        warnings.push(format!(
+                                            "channel {chan} clip at {pos}: trim window shorter than the clip; v20 shortens it on load"
+                                        ));
+                                    }
+                                }
                             }
                         }
-                        let chan = u16::from_le_bytes([rec[6], rec[7]]);
-                        let len = u32::from_le_bytes(rec[8..12].try_into().unwrap());
-                        let fi = u32::from_le_bytes(rec[40..44].try_into().unwrap());
-                        let fo = u32::from_le_bytes(rec[44..48].try_into().unwrap());
+                        nb.extend_from_slice(&converted);
+                        clips_converted += 1;
+                        if scale_applied {
+                            clip_scales_applied += 1;
+                        }
+                        let (fi, fo) = clip_fade_bits(rec);
                         let fi = fade_time(fi).map_or(0, |_| fi);
                         let fo = fade_time(fo).map_or(0, |_| fo);
                         if let Some(g) = fade_groups.iter().find(|g| {
@@ -711,13 +1014,32 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                     out.push(Event { op: op::MIXER_PARAMS, payload: Payload::Blob(nb) });
                 }
             }
-            0xD8 if !fade_groups.is_empty() && !d8_extended => {
-                d8_extended = true;
+            0xD8 => {
                 let mut nb = ev.blob().ok_or("0xD8 without blob payload")?.to_vec();
-                for g in &fade_groups {
-                    nb.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
-                    nb.extend_from_slice(&g.chan.to_le_bytes());
-                    nb.extend_from_slice(&((g.level * 12800.0).round() as i32).to_le_bytes());
+                if nb.len() % 12 == 0 {
+                    for rec in nb.chunks_exact_mut(12) {
+                        let tgt = u16::from_le_bytes([rec[6], rec[7]]);
+                        if tgt >= 0x7000 {
+                            let strip = ((tgt - 0x7000) >> 6).min(126);
+                            let off = (tgt - 0x7000) & 0x3F;
+                            let nt = 0x2000 + strip * 0x40 + off;
+                            rec[6..8].copy_from_slice(&nt.to_le_bytes());
+                            controls_rebased += 1;
+                        }
+                    }
+                } else {
+                    warnings.push(format!(
+                        "initialised control blob of {} bytes is not a multiple of 12 — left unchanged",
+                        nb.len()
+                    ));
+                }
+                if !fade_groups.is_empty() && !d8_extended {
+                    d8_extended = true;
+                    for g in &fade_groups {
+                        nb.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+                        nb.extend_from_slice(&g.chan.to_le_bytes());
+                        nb.extend_from_slice(&((g.level * 12800.0).round() as i32).to_le_bytes());
+                    }
                 }
                 out.push(Event { op: 0xD8, payload: Payload::Blob(nb) });
             }
@@ -793,18 +1115,39 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
         &mut notes,
     );
     push(
+        controls_rebased,
+        format!("rebased {controls_rebased} initialised control targets 0x7000 -> 0x2000"),
+        &mut notes,
+    );
+    push(
         d7_truncated,
         format!("truncated {d7_truncated} channel blobs 0xD7 to 158 bytes"),
         &mut notes,
     );
     push(
-        stretch_lost,
-        format!("{stretch_lost} stretched audio clips lose their stretch (v20 has no per-clip scale)"),
-        &mut warnings,
+        clip_scales_applied,
+        format!(
+            "retimed {clip_scales_applied} playlist clips whose v25 stretch scale could not move to the channel"
+        ),
+        &mut notes,
+    );
+    push(
+        channel_scales_folded,
+        format!(
+            "folded {channel_scales_folded} v25 clip stretch scales into v20 channel stretch times"
+        ),
+        &mut notes,
     );
     push(
         stretch_fixed,
         format!("rewrote {stretch_fixed} sampler stretch times f32 -> u32"),
+        &mut notes,
+    );
+    push(
+        end_trims_reconciled,
+        format!(
+            "reconciled {end_trims_reconciled} audio clip end trims to the v20 length recompute"
+        ),
         &mut notes,
     );
     push(
@@ -853,4 +1196,315 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
         notes,
         warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v25_clip(len: u32, fade_in: f32, fade_out: f32, scale: f64) -> Vec<u8> {
+        let mut rec = vec![0u8; 80];
+        rec[8..12].copy_from_slice(&len.to_le_bytes());
+        rec[12..16].copy_from_slice(&499i32.to_le_bytes());
+        rec[24..28].copy_from_slice(&1234.5f32.to_le_bytes());
+        rec[28..32].copy_from_slice(&2345.5f32.to_le_bytes());
+        rec[CLIP_FADE_IN_OFFSET..CLIP_FADE_IN_OFFSET + 4].copy_from_slice(&fade_in.to_le_bytes());
+        rec[40..44].copy_from_slice(&(-0.25f32).to_le_bytes());
+        rec[CLIP_FADE_OUT_OFFSET..CLIP_FADE_OUT_OFFSET + 4]
+            .copy_from_slice(&fade_out.to_le_bytes());
+        rec[52..56].copy_from_slice(&1.0f32.to_le_bytes());
+        rec[CLIP_STRETCH_SCALE_OFFSET..CLIP_STRETCH_SCALE_OFFSET + 8]
+            .copy_from_slice(&scale.to_le_bytes());
+        rec
+    }
+
+    fn trimmed_clip(pos: u32, len: u32, start_ms: f32, end_ms: f32) -> Vec<u8> {
+        let mut rec = v25_clip(len, 0.0, 0.0, 1.0);
+        rec[0..4].copy_from_slice(&pos.to_le_bytes());
+        rec[CLIP_START_TRIM_OFFSET..CLIP_START_TRIM_OFFSET + 4]
+            .copy_from_slice(&start_ms.to_le_bytes());
+        rec[CLIP_END_TRIM_OFFSET..CLIP_END_TRIM_OFFSET + 4].copy_from_slice(&end_ms.to_le_bytes());
+        rec
+    }
+
+    fn test_tick_ms() -> f64 {
+        60_000.0 / (148.0 * 96.0)
+    }
+
+    fn converted_playlist(flp: &Flp) -> (Vec<u8>, Outcome) {
+        let outcome = to_fl20(flp).unwrap();
+        let blob = outcome
+            .flp
+            .events
+            .iter()
+            .find(|event| event.op == op::PLAYLIST)
+            .and_then(Event::blob)
+            .unwrap()
+            .to_vec();
+        (blob, outcome)
+    }
+
+    fn source_flp(playlist: Vec<u8>) -> Flp {
+        source_flp_with_stretch(playlist, 24576.0)
+    }
+
+    fn source_flp_with_stretch(playlist: Vec<u8>, stretch: f32) -> Flp {
+        let mut d7 = vec![0u8; 168];
+        d7[96..100].copy_from_slice(&stretch.to_le_bytes());
+        Flp {
+            format: 0,
+            n_channels: 1,
+            ppq: 96,
+            header_raw: vec![0, 0, 1, 0, 96, 0],
+            events: vec![
+                Event {
+                    op: op::VERSION,
+                    payload: Payload::Blob(b"25.1.3.4922\0".to_vec()),
+                },
+                Event {
+                    op: op::TEMPO,
+                    payload: Payload::U32(148_000),
+                },
+                Event {
+                    op: op::CHANNEL_NEW,
+                    payload: Payload::U16(0),
+                },
+                Event {
+                    op: op::CHANNEL_KIND,
+                    payload: Payload::U8(4),
+                },
+                Event { op: op::CHANNEL_DECO, payload: Payload::Blob(d7) },
+                Event {
+                    op: 0x63,
+                    payload: Payload::U16(0),
+                },
+                Event {
+                    op: op::PLAYLIST,
+                    payload: Payload::Blob(playlist),
+                },
+            ],
+            trailing: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn converts_v25_fade_in_and_stretch_scale() {
+        let source = v25_clip(192, 500.0, 250.0, 0.5);
+        let outcome = to_fl20(&source_flp(source.clone())).unwrap();
+        let playlist = outcome
+            .flp
+            .events
+            .iter()
+            .find(|event| event.op == op::PLAYLIST)
+            .and_then(Event::blob)
+            .unwrap();
+
+        assert_eq!(outcome.flp.n_channels, 2);
+        assert_eq!(playlist.len(), 64);
+        assert_eq!(u32::from_le_bytes(playlist[8..12].try_into().unwrap()), 192);
+        assert_eq!(&playlist[24..32], &source[24..32]);
+        let d7 = outcome
+            .flp
+            .events
+            .iter()
+            .find(|event| event.op == op::CHANNEL_DECO)
+            .and_then(Event::blob)
+            .unwrap();
+        assert_eq!(u32::from_le_bytes(d7[96..100].try_into().unwrap()), 12288);
+        assert!(outcome.flp.events.iter().any(|event| event.op == 0xEA));
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note.contains("emulated 1 clip fades")));
+    }
+
+    #[test]
+    fn reconciles_wide_end_trim_on_stretched_channel() {
+        let ratio = 0.5;
+        let span = ratio * test_tick_ms();
+        let mut playlist = Vec::new();
+        for (i, len) in [96u32, 192, 384].into_iter().enumerate() {
+            playlist.extend(trimmed_clip(i as u32 * 1000, len, 0.0, (len as f64 * span) as f32));
+        }
+        playlist.extend(trimmed_clip(9000, 192, 0.0, (194.0 * span) as f32));
+
+        let (blob, outcome) = converted_playlist(&source_flp(playlist.clone()));
+        assert_eq!(blob.len(), 4 * 32);
+        for i in 0..3 {
+            assert_eq!(&blob[i * 32 + 24..i * 32 + 32], &playlist[i * 80 + 24..i * 80 + 32]);
+        }
+        let end = f32::from_le_bytes(blob[3 * 32 + 28..3 * 32 + 32].try_into().unwrap());
+        assert!((f64::from(end) - 192.0 * span).abs() < 0.05, "end trim was {end}");
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note == "reconciled 1 audio clip end trims to the v20 length recompute"));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    /* stored lengths come from the program rounding window/(R*tick) up: every window sits ~0.7
+       of a tick short of its length. a ratio-averaging estimate of R lands low and rewrites
+       trims that v20 would have reproduced exactly; the interval estimate must not touch them. */
+    #[test]
+    fn keeps_end_trims_whose_lengths_round_back_exactly() {
+        let ratio = 1.15191;
+        let span = ratio * test_tick_ms();
+        let mut playlist = Vec::new();
+        for (i, len) in [96u32, 192, 385, 24, 48, 128].into_iter().enumerate() {
+            let window = (f64::from(len) - 0.3) * span;
+            playlist.extend(trimmed_clip(i as u32 * 1000, len, 3615.0, 3615.0 + window as f32));
+        }
+
+        let (blob, outcome) = converted_playlist(&source_flp(playlist.clone()));
+        for i in 0..6 {
+            assert_eq!(
+                &blob[i * 32 + 24..i * 32 + 32],
+                &playlist[i * 80 + 24..i * 80 + 32],
+                "clip {i} trim bytes changed"
+            );
+        }
+        assert!(!outcome.notes.iter().any(|note| note.starts_with("reconciled")));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    #[test]
+    fn warns_about_narrow_end_trim_on_stretched_channel() {
+        let ratio = 0.5;
+        let span = ratio * test_tick_ms();
+        let mut playlist = Vec::new();
+        for (i, len) in [96u32, 192, 384].into_iter().enumerate() {
+            playlist.extend(trimmed_clip(i as u32 * 1000, len, 0.0, (len as f64 * span) as f32));
+        }
+        playlist.extend(trimmed_clip(9000, 192, 0.0, (180.0 * span) as f32));
+
+        let (blob, outcome) = converted_playlist(&source_flp(playlist.clone()));
+        assert_eq!(&blob[3 * 32 + 24..3 * 32 + 32], &playlist[3 * 80 + 24..3 * 80 + 32]);
+        assert!(!outcome
+            .notes
+            .iter()
+            .any(|note| note.starts_with("reconciled")));
+        assert_eq!(
+            outcome.warnings,
+            vec![
+                "channel 0 clip at 9000: trim window shorter than the clip; v20 shortens it on load"
+                    .to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn leaves_unstretched_channel_end_trims_alone() {
+        let span = 0.5 * test_tick_ms();
+        let mut playlist = Vec::new();
+        for (i, len) in [96u32, 192, 384].into_iter().enumerate() {
+            playlist.extend(trimmed_clip(i as u32 * 1000, len, 0.0, (len as f64 * span) as f32));
+        }
+        playlist.extend(trimmed_clip(9000, 192, 0.0, (194.0 * span) as f32));
+
+        let source = source_flp_with_stretch(playlist.clone(), 0.0);
+        let (blob, outcome) = converted_playlist(&source);
+        for i in 0..4 {
+            assert_eq!(&blob[i * 32 + 24..i * 32 + 32], &playlist[i * 80 + 24..i * 80 + 32]);
+        }
+        assert!(!outcome
+            .notes
+            .iter()
+            .any(|note| note.starts_with("reconciled")));
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+    }
+
+    #[test]
+    fn rebases_initialised_control_targets() {
+        let span = 0.5 * test_tick_ms();
+        let playlist = trimmed_clip(0, 192, 0.0, (192.0 * span) as f32);
+        let mut d8 = vec![0u8; 24];
+        d8[4] = 0;
+        d8[6..8].copy_from_slice(&0x7001u16.to_le_bytes());
+        d8[8..12].copy_from_slice(&12800i32.to_le_bytes());
+        d8[16] = 1;
+        d8[18..20].copy_from_slice(&0x2005u16.to_le_bytes());
+        d8[20..24].copy_from_slice(&6400i32.to_le_bytes());
+
+        let mut source = source_flp(playlist);
+        source.events.push(Event { op: 0xD8, payload: Payload::Blob(d8) });
+        let outcome = to_fl20(&source).unwrap();
+        let blob = outcome
+            .flp
+            .events
+            .iter()
+            .find(|event| event.op == 0xD8)
+            .and_then(Event::blob)
+            .unwrap();
+
+        assert_eq!(blob.len(), 24);
+        assert_eq!(u16::from_le_bytes(blob[6..8].try_into().unwrap()), 0x2001);
+        assert_eq!(u16::from_le_bytes(blob[18..20].try_into().unwrap()), 0x2005);
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note == "rebased 1 initialised control targets 0x7000 -> 0x2000"));
+    }
+
+    fn wrapper_flp(plugin: &str, marker: u32) -> Flp {
+        let span = 0.5 * test_tick_ms();
+        let mut source = source_flp(trimmed_clip(0, 192, 0.0, (192.0 * span) as f32));
+        let mut name: Vec<u8> = plugin.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+        name.extend_from_slice(&[0, 0]);
+        let mut state = vec![0u8; 12];
+        state[0..4].copy_from_slice(&marker.to_le_bytes());
+        state[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        source.events.push(Event {
+            op: op::PLUGIN_INTERNAL_NAME,
+            payload: Payload::Blob(name),
+        });
+        source.events.push(Event { op: op::WRAPPER, payload: Payload::Blob(state) });
+        source
+    }
+
+    fn converted_wrapper(plugin: &str, marker: u32) -> (Vec<u8>, Outcome) {
+        let outcome = to_fl20(&wrapper_flp(plugin, marker)).unwrap();
+        let blob = outcome
+            .flp
+            .events
+            .iter()
+            .find(|event| event.op == op::WRAPPER)
+            .and_then(Event::blob)
+            .unwrap()
+            .to_vec();
+        (blob, outcome)
+    }
+
+    #[test]
+    fn keeps_native_plugin_wrapper_state_unchanged() {
+        let (blob, outcome) = converted_wrapper("Fruity Love Philter", 786_435);
+        assert_eq!(
+            blob,
+            wrapper_flp("Fruity Love Philter", 786_435)
+                .events
+                .iter()
+                .find(|event| event.op == op::WRAPPER)
+                .and_then(Event::blob)
+                .unwrap()
+        );
+        assert!(!outcome.notes.iter().any(|note| note.contains("wrapper marker")));
+    }
+
+    #[test]
+    fn rewrites_fruity_wrapper_state_version() {
+        let (blob, outcome) = converted_wrapper("Fruity Wrapper", 12);
+        assert_eq!(u32::from_le_bytes(blob[0..4].try_into().unwrap()), 10);
+        assert_eq!(u32::from_le_bytes(blob[4..8].try_into().unwrap()), 0x1234_5678);
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note == "wrapper marker 12 -> 10 on 1 plugins"));
+    }
+
+    #[test]
+    fn uses_fl20_length_floor_for_v25_scale() {
+        for (len, expected) in [(96, 97), (48, 48), (192, 194), (385, 389)] {
+            let rec = v25_clip(len, 0.0, 0.0, 0.988_417_187_181_706);
+            assert_eq!(fl20_clip_length(&rec, 80, &[]), (expected, true));
+        }
+    }
 }
