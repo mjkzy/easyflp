@@ -21,23 +21,24 @@ const FL20_REGISTRATION: [u8; 50] = [
 
 /* opcodes 20.8 never writes. derived by byte-diffing the same project saved by 20.8.4 and 25.1.4,
    plus 0xAC (25's fixed-3-byte event). 0x68 is absent on purpose: it converts to 0x16 before
-   deletion would apply. */
-const POST_FL20_OPS: [u8; 19] = [
+   deletion would apply. 0xD8 was here until two genuine 20.8.4.2576 saves proved it is a
+   v20-era event (see FORMAT.md). */
+const POST_FL20_OPS: [u8; 18] = [
     0x29, 0x2A, 0x2B, 0x2C, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x67, 0xA5, 0xA6, 0xA7, 0xA9, 0xAA,
-    0xAC, 0xD8, 0xF2, 0xF3,
+    0xAC, 0xF2, 0xF3,
 ];
 
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
    (0x95/0xCC insert colour+name, 0xC1 pattern name, 0xEF lane name, 0xD0 legacy notes).
    leftovers outside this set are reported, never deleted. */
-const FL20_KNOWN_OPS: [u8; 91] = [
+const FL20_KNOWN_OPS: [u8; 96] = [
     0x00, 0x09, 0x0A, 0x0B, 0x11, 0x12, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
     0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x40, 0x41, 0x43, 0x45, 0x46, 0x47, 0x4A, 0x4B, 0x4C,
     0x50, 0x53, 0x55, 0x56, 0x59, 0x61, 0x62, 0x63, 0x64, 0x80, 0x83, 0x84, 0x85, 0x8A, 0x8B,
     0x8F, 0x90, 0x91, 0x92, 0x93, 0x95, 0x96, 0x9A, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F, 0xA4, 0xC1,
     0xC2, 0xC3, 0xC4, 0xC7, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCE, 0xCF, 0xD0, 0xD1, 0xD4, 0xD5,
-    0xD7, 0xDA, 0xDB, 0xDD, 0xE0, 0xE1, 0xE2, 0xE4, 0xE5, 0xE7, 0xE9, 0xEB, 0xEC, 0xED, 0xEE,
-    0xF1,
+    0xD7, 0xD8, 0xD9, 0xDA, 0xDB, 0xDD, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE7, 0xE9, 0xEA,
+    0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1,
 ];
 
 /* 20.8 writes a fixed 4697-record 0xE1 table: a header record, then per strip the ten slot pairs
@@ -140,6 +141,373 @@ fn canonical_pid(off: u16, pid: u8) -> bool {
         && matches!(pid, 192 | 193 | 194 | 208..=210 | 216..=218 | 224..=226 | 164..=168 | 190)
 }
 
+/* 20.8 stores the sampler stretch time (0xD7 offset 96) as u32 in 1/768-bar units.
+   25 writes an f32 tick count in the same four bytes. Legit u32 values stay far below
+   0x1000_0000 (349k bars), while an f32 for any tick count >= 1 has bits >= 0x3F80_0000,
+   so the bit pattern alone separates the two encodings. */
+fn fix_stretch_time(d7: &mut [u8], ppq: u16, fixed: &mut usize) {
+    if d7.len() < 100 {
+        return;
+    }
+    let raw = u32::from_le_bytes(d7[96..100].try_into().unwrap());
+    if raw < 0x1000_0000 {
+        return;
+    }
+    let ticks = f32::from_bits(raw);
+    if !ticks.is_finite() || ticks <= 0.0 || ticks >= 10_000_000.0 {
+        return;
+    }
+    let v = (ticks as f64 * 192.0 / ppq as f64).round() as u32;
+    d7[96..100].copy_from_slice(&v.to_le_bytes());
+    *fixed += 1;
+}
+
+/* 21+ audio clips carry fade-in/fade-out times (f32 milliseconds at record offsets 40/44)
+   that v20 has no field for. The fades are emulated the way a v20 user would build them by
+   hand: one automation channel per distinct (channel, length, fades) clip shape, linked to
+   the audio channel's volume, with a matching clip on a free playlist lane under every
+   faded instance. All template bytes below are copied from a genuine 20.8.4.2576 save of
+   exactly this construction. */
+const FADE_TENSION: f32 = -0.280_755;
+const POINT_MID: u32 = 0x0200_0000;
+const POINT_LAST: u32 = 0xFF00_0000;
+const EA_HEADER: [u8; 17] = [
+    0x01, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00,
+    0x00, 0x00,
+];
+const EA_TAIL: [u8; 112] = [
+    0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x80, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x80, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFB, 0xB2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const AUTO_D4: [u8; 52] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,
+    0x00, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xA8, 0x00, 0x00, 0x00, 0xFC, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const AUTO_D1: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00,
+    0x00, 0x90, 0x00, 0x00, 0x00,
+];
+const AUTO_DB: [u8; 24] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const AUTO_E5: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const AUTO_DD: [u8; 9] = [0x01, 0x00, 0x00, 0x00, 0xF4, 0x01, 0x00, 0x00, 0x00];
+const AUTO_D7: [u8; 158] = [
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF,
+    0xFF, 0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00,
+    0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x04, 0x00, 0x00, 0x30, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0xA7, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0xFE, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x01,
+];
+const AUTO_E4_0: [u8; 16] = [
+    0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00,
+];
+const AUTO_E4_1: [u8; 16] = [
+    0x3C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00,
+];
+const AUTO_DA: [u8; 68] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x20, 0x4E, 0x00,
+    0x00, 0x20, 0x4E, 0x00, 0x00, 0x30, 0x75, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x20, 0x4E,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x20, 0x4E, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0xB6, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const AUTO_DA_1: [u8; 68] = [
+    0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x20, 0x4E, 0x00,
+    0x00, 0x20, 0x4E, 0x00, 0x00, 0x30, 0x75, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x20, 0x4E,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x00, 0x00, 0x20, 0x4E, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0xB6, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x9B, 0xFF, 0xFF, 0xFF,
+];
+
+struct FadeGroup {
+    chan: u16,
+    len_ticks: u32,
+    fade_in_bits: u32,
+    fade_out_bits: u32,
+    auto_idx: u16,
+    lane: i32,
+    level: f64,
+    colour: u32,
+    name: String,
+    len_beats: f64,
+    fade_in_beats: f64,
+    fade_out_beats: f64,
+}
+
+fn fade_time(bits: u32) -> Option<f32> {
+    let ms = f32::from_bits(bits);
+    (ms.is_finite() && ms > 0.05 && ms < 600_000.0).then_some(ms)
+}
+
+fn plan_fades(src: &Flp, clip_size: usize, warnings: &mut Vec<String>) -> Vec<FadeGroup> {
+    struct ChanMeta {
+        vol: u32,
+        colour: u32,
+        name: String,
+        stem: String,
+    }
+
+    let mut chans: Vec<ChanMeta> = Vec::new();
+    let bpm = src
+        .events
+        .iter()
+        .find(|e| e.op == op::TEMPO)
+        .and_then(|e| e.value())
+        .map(|v| v as f64 / 1000.0)
+        .unwrap_or(120.0);
+
+    for ev in &src.events {
+        match ev.op {
+            op::CHANNEL_NEW => chans.push(ChanMeta {
+                vol: 10000,
+                colour: 6316174,
+                name: String::new(),
+                stem: String::new(),
+            }),
+            0x63 => break,
+            0x80 => {
+                if let (Some(c), Some(v)) = (chans.last_mut(), ev.value()) {
+                    c.colour = v;
+                }
+            }
+            0xDB => {
+                if let (Some(c), Some(b)) = (chans.last_mut(), ev.blob()) {
+                    if b.len() >= 8 {
+                        c.vol = u32::from_le_bytes(b[4..8].try_into().unwrap());
+                    }
+                }
+            }
+            op::NAME => {
+                if let (Some(c), Some(b)) = (chans.last_mut(), ev.blob()) {
+                    c.name = crate::flp::utf16z(b);
+                }
+            }
+            op::SAMPLE_PATH => {
+                if let (Some(c), Some(b)) = (chans.last_mut(), ev.blob()) {
+                    let path = crate::flp::utf16z(b);
+                    let file = path.rsplit(['\\', '/']).next().unwrap_or(&path);
+                    c.stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file).to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut groups: Vec<FadeGroup> = Vec::new();
+    let mut min_lane = i32::MAX;
+    for ev in src.events.iter().filter(|e| e.op == op::PLAYLIST) {
+        let Some(b) = ev.blob() else { continue };
+        for rec in b.chunks_exact(clip_size) {
+            min_lane = min_lane.min(i32::from_le_bytes(rec[12..16].try_into().unwrap()));
+            let chan = u16::from_le_bytes([rec[6], rec[7]]);
+            if chan >= 0x5000 || usize::from(chan) >= chans.len() {
+                continue;
+            }
+            let fi = u32::from_le_bytes(rec[40..44].try_into().unwrap());
+            let fo = u32::from_le_bytes(rec[44..48].try_into().unwrap());
+            let (fi_ms, fo_ms) = (fade_time(fi), fade_time(fo));
+            if fi_ms.is_none() && fo_ms.is_none() {
+                continue;
+            }
+            let len_ticks = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+            let fi = fi_ms.map_or(0, |_| fi);
+            let fo = fo_ms.map_or(0, |_| fo);
+            if groups.iter().any(|g| {
+                g.chan == chan
+                    && g.len_ticks == len_ticks
+                    && g.fade_in_bits == fi
+                    && g.fade_out_bits == fo
+            }) {
+                continue;
+            }
+            let meta = &chans[usize::from(chan)];
+            let base = if !meta.name.is_empty() {
+                meta.name.clone()
+            } else if !meta.stem.is_empty() {
+                meta.stem.clone()
+            } else {
+                format!("Channel {}", chan + 1)
+            };
+            let len_beats = len_ticks as f64 / src.ppq as f64;
+            let ms_to_beats = |ms: Option<f32>| ms.map_or(0.0, |m| m as f64 / 1000.0 * bpm / 60.0);
+            let (mut fib, mut fob) = (ms_to_beats(fi_ms), ms_to_beats(fo_ms));
+            if fib + fob > len_beats && fib + fob > 0.0 {
+                let s = len_beats / (fib + fob);
+                fib *= s;
+                fob *= s;
+            }
+            groups.push(FadeGroup {
+                chan,
+                len_ticks,
+                fade_in_bits: fi,
+                fade_out_bits: fo,
+                auto_idx: 0,
+                lane: 0,
+                level: (meta.vol.min(12800)) as f64 / 12800.0,
+                colour: meta.colour,
+                name: format!("{base} - Channel volume"),
+                len_beats,
+                fade_in_beats: fib,
+                fade_out_beats: fob,
+            });
+        }
+    }
+
+    let n_chans = chans.len() as u16;
+    let mut kept = Vec::new();
+    for (i, mut g) in groups.into_iter().enumerate() {
+        let lane = min_lane - 1 - i as i32;
+        if lane < 0 {
+            warnings.push(format!(
+                "no free playlist lane left to emulate fades on \"{}\" — clip fades dropped",
+                g.name
+            ));
+            continue;
+        }
+        g.auto_idx = n_chans + kept.len() as u16;
+        g.lane = lane;
+        kept.push(g);
+    }
+    kept
+}
+
+fn fade_points(g: &FadeGroup) -> Vec<(f64, f64, f32, u32)> {
+    let mut pts = Vec::new();
+    if g.fade_in_beats > 0.0 {
+        pts.push((0.0, 0.0, 0.0, 0));
+        pts.push((g.fade_in_beats, g.level, FADE_TENSION, POINT_MID));
+    } else {
+        pts.push((0.0, g.level, 0.0, 0));
+    }
+    if g.fade_out_beats > 0.0 {
+        let hold = g.len_beats - g.fade_in_beats - g.fade_out_beats;
+        if hold > 1e-9 {
+            pts.push((hold, g.level, 0.0, POINT_MID));
+        }
+        pts.push((g.fade_out_beats, 0.0, FADE_TENSION, POINT_MID));
+        /* zero-width final point: snaps the channel volume back to its knob value the
+           instant the clip ends, so later un-faded clips of the same channel stay audible */
+        pts.push((0.0, g.level, 0.0, POINT_LAST));
+    } else {
+        let m = pts.len() - 1;
+        pts[m].3 = POINT_LAST;
+        let rest = g.len_beats - g.fade_in_beats;
+        if rest > 1e-9 {
+            pts[m].3 = POINT_MID;
+            pts.push((rest, g.level, 0.0, POINT_LAST));
+        }
+    }
+    pts
+}
+
+fn fade_automation_events(g: &FadeGroup) -> Vec<Event> {
+    let pts = fade_points(g);
+    let mut ea = Vec::with_capacity(21 + 24 * pts.len() + EA_TAIL.len());
+    ea.extend_from_slice(&EA_HEADER);
+    ea.extend_from_slice(&(pts.len() as u32).to_le_bytes());
+    for (pos, val, tension, flags) in pts {
+        ea.extend_from_slice(&pos.to_le_bytes());
+        ea.extend_from_slice(&val.to_le_bytes());
+        ea.extend_from_slice(&tension.to_le_bytes());
+        ea.extend_from_slice(&flags.to_le_bytes());
+    }
+    ea.extend_from_slice(&EA_TAIL);
+
+    let mut name: Vec<u8> = g.name.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    name.extend_from_slice(&[0, 0]);
+
+    let u8e = |o: u8, v: u8| Event { op: o, payload: Payload::U8(v) };
+    let u16e = |o: u8, v: u16| Event { op: o, payload: Payload::U16(v) };
+    let u32e = |o: u8, v: u32| Event { op: o, payload: Payload::U32(v) };
+    let blob = |o: u8, b: &[u8]| Event { op: o, payload: Payload::Blob(b.to_vec()) };
+
+    vec![
+        u16e(op::CHANNEL_NEW, g.auto_idx),
+        u8e(op::CHANNEL_KIND, 5),
+        blob(op::PLUGIN_INTERNAL_NAME, &[0, 0]),
+        blob(0xD4, &AUTO_D4),
+        blob(op::NAME, &name),
+        u32e(0x9B, 0),
+        u32e(0x80, g.colour),
+        u8e(0x00, 1),
+        blob(0xD1, &AUTO_D1),
+        u32e(0x8A, 8388736),
+        u32e(0x8B, 65536),
+        u16e(0x59, 0),
+        u16e(0x61, 128),
+        u16e(0x45, 128),
+        u16e(0x56, 256),
+        u16e(0x47, 1024),
+        u16e(0x53, 0),
+        u16e(0x4A, 0),
+        u16e(0x4B, 0),
+        u16e(0x4C, 0),
+        u16e(0x55, 2048),
+        u32e(0x83, 8388608),
+        u16e(0x46, 0),
+        u8e(op::CHANNEL_ROUTE, 0),
+        blob(0xDB, &AUTO_DB),
+        blob(0xE5, &AUTO_E5),
+        blob(0xDD, &AUTO_DD),
+        blob(op::CHANNEL_DECO, &AUTO_D7),
+        u32e(0x84, 0),
+        u32e(0x90, 0),
+        u32e(0x91, 1),
+        blob(0xEA, &ea),
+        u8e(0x20, 0),
+        blob(0xE4, &AUTO_E4_0),
+        blob(0xE4, &AUTO_E4_1),
+        blob(0xDA, &AUTO_DA),
+        blob(0xDA, &AUTO_DA_1),
+        blob(0xDA, &AUTO_DA),
+        blob(0xDA, &AUTO_DA),
+        blob(0xDA, &AUTO_DA),
+        u32e(0x8F, 3),
+        u8e(0x14, 0),
+    ]
+}
+
+fn fade_link_event(g: &FadeGroup) -> Event {
+    let mut b = vec![0u8; 20];
+    b[2..4].copy_from_slice(&g.auto_idx.to_le_bytes());
+    b[10..12].copy_from_slice(&g.chan.to_le_bytes());
+    b[12..16].copy_from_slice(&8u32.to_le_bytes());
+    b[16..20].copy_from_slice(&469u32.to_le_bytes());
+    Event { op: op::AUTOMATION_LINK, payload: Payload::Blob(b) }
+}
+
+fn fade_clip_record(g: &FadeGroup, src_rec: &[u8]) -> [u8; 32] {
+    let mut r = [0u8; 32];
+    r[0..6].copy_from_slice(&src_rec[0..6]);
+    r[6..8].copy_from_slice(&g.auto_idx.to_le_bytes());
+    r[8..12].copy_from_slice(&src_rec[8..12]);
+    r[12..16].copy_from_slice(&g.lane.to_le_bytes());
+    r[16..24].copy_from_slice(&[0x78, 0x00, 0x40, 0x00, 0x40, 0x64, 0x80, 0x80]);
+    r[28..32].copy_from_slice(&(g.len_beats as f32).to_le_bytes());
+    r
+}
+
 pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     let version = src.version().ok_or("file has no version event (0xC7)")?;
     let major = src
@@ -176,6 +544,15 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     let mut warnings = Vec::new();
     let mut out: Vec<Event> = Vec::with_capacity(src.events.len());
 
+    let fade_groups = if clip_size >= 60 {
+        plan_fades(src, clip_size, &mut warnings)
+    } else {
+        Vec::new()
+    };
+    let mut links_inserted = false;
+    let mut channels_inserted = false;
+    let mut d8_extended = false;
+
     let mut chan_idx = 0usize;
     let mut deleted = 0usize;
     let mut routes_converted = 0usize;
@@ -186,10 +563,25 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
     let mut lanes_truncated = 0usize;
     let mut tables_expanded = 0usize;
     let mut params_rebased = 0usize;
+    let mut links_rebased = 0usize;
     let mut e1_rebuilt = 0usize;
     let mut stretch_lost = 0usize;
+    let mut stretch_fixed = 0usize;
+    let mut fades_emulated = 0usize;
 
     for ev in &src.events {
+        if ev.op == op::CHANNEL_NEW && !links_inserted {
+            links_inserted = true;
+            for g in &fade_groups {
+                out.push(fade_link_event(g));
+            }
+        }
+        if ev.op == 0x63 && !channels_inserted {
+            channels_inserted = true;
+            for g in &fade_groups {
+                out.extend(fade_automation_events(g));
+            }
+        }
         match ev.op {
             o if POST_FL20_OPS.contains(&o) => deleted += 1,
             op::CHANNEL_NEW => {
@@ -233,15 +625,14 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
             }
             op::CHANNEL_DECO => {
                 let b = ev.blob().ok_or("0xD7 without blob payload")?;
-                if b.len() > 158 {
+                let mut nb = if b.len() > 158 {
                     d7_truncated += 1;
-                    out.push(Event {
-                        op: op::CHANNEL_DECO,
-                        payload: Payload::Blob(b[..158].to_vec()),
-                    });
+                    b[..158].to_vec()
                 } else {
-                    out.push(ev.clone());
-                }
+                    b.to_vec()
+                };
+                fix_stretch_time(&mut nb, src.ppq, &mut stretch_fixed);
+                out.push(Event { op: op::CHANNEL_DECO, payload: Payload::Blob(nb) });
             }
             op::PLAYLIST => {
                 let b = ev.blob().ok_or("0xE9 without blob payload")?;
@@ -264,6 +655,22 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                             if scale != 0.0 && (scale - 1.0).abs() > 1e-9 {
                                 stretch_lost += 1;
                             }
+                        }
+                        let chan = u16::from_le_bytes([rec[6], rec[7]]);
+                        let len = u32::from_le_bytes(rec[8..12].try_into().unwrap());
+                        let fi = u32::from_le_bytes(rec[40..44].try_into().unwrap());
+                        let fo = u32::from_le_bytes(rec[44..48].try_into().unwrap());
+                        let fi = fade_time(fi).map_or(0, |_| fi);
+                        let fo = fade_time(fo).map_or(0, |_| fo);
+                        if let Some(g) = fade_groups.iter().find(|g| {
+                            g.chan == chan
+                                && g.len_ticks == len
+                                && g.fade_in_bits == fi
+                                && g.fade_out_bits == fo
+                                && (fi != 0 || fo != 0)
+                        }) {
+                            nb.extend_from_slice(&fade_clip_record(g, rec));
+                            fades_emulated += 1;
                         }
                     }
                     out.push(Event { op: op::PLAYLIST, payload: Payload::Blob(nb) });
@@ -301,6 +708,35 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
                     let nb = rebuild_mixer_params(b, &mut params_rebased);
                     e1_rebuilt += 1;
                     out.push(Event { op: op::MIXER_PARAMS, payload: Payload::Blob(nb) });
+                }
+            }
+            0xD8 if !fade_groups.is_empty() && !d8_extended => {
+                d8_extended = true;
+                let mut nb = ev.blob().ok_or("0xD8 without blob payload")?.to_vec();
+                for g in &fade_groups {
+                    nb.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+                    nb.extend_from_slice(&g.chan.to_le_bytes());
+                    nb.extend_from_slice(&((g.level * 12800.0).round() as i32).to_le_bytes());
+                }
+                out.push(Event { op: 0xD8, payload: Payload::Blob(nb) });
+            }
+            op::AUTOMATION_LINK => {
+                let b = ev.blob().ok_or("0xE3 without blob payload")?;
+                let tgt = if b.len() == 20 {
+                    u16::from_le_bytes([b[10], b[11]])
+                } else {
+                    0
+                };
+                if tgt >= 0x7000 {
+                    let strip = ((tgt - 0x7000) >> 6).min(126);
+                    let off = (tgt - 0x7000) & 0x3F;
+                    let nt = 0x2000 + strip * 0x40 + off;
+                    let mut nb = b.to_vec();
+                    nb[10..12].copy_from_slice(&nt.to_le_bytes());
+                    links_rebased += 1;
+                    out.push(Event { op: op::AUTOMATION_LINK, payload: Payload::Blob(nb) });
+                } else {
+                    out.push(ev.clone());
                 }
             }
             _ => out.push(ev.clone()),
@@ -351,6 +787,11 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
         &mut notes,
     );
     push(
+        links_rebased,
+        format!("rebased {links_rebased} automation link targets 0x7000 -> 0x2000"),
+        &mut notes,
+    );
+    push(
         d7_truncated,
         format!("truncated {d7_truncated} channel blobs 0xD7 to 158 bytes"),
         &mut notes,
@@ -359,6 +800,19 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
         stretch_lost,
         format!("{stretch_lost} stretched audio clips lose their stretch (v20 has no per-clip scale)"),
         &mut warnings,
+    );
+    push(
+        stretch_fixed,
+        format!("rewrote {stretch_fixed} sampler stretch times f32 ticks -> v20 units"),
+        &mut notes,
+    );
+    push(
+        fades_emulated,
+        format!(
+            "emulated {fades_emulated} clip fades with {} channel-volume automation clips",
+            fade_groups.len()
+        ),
+        &mut notes,
     );
 
     let leftovers: Vec<u8> = {
@@ -382,12 +836,16 @@ pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
         ));
     }
 
+    let n_channels = src.n_channels + fade_groups.len() as u16;
+    let mut header_raw = src.header_raw.clone();
+    header_raw[2..4].copy_from_slice(&n_channels.to_le_bytes());
+
     Ok(Outcome {
         flp: Flp {
             format: src.format,
-            n_channels: src.n_channels,
+            n_channels,
             ppq: src.ppq,
-            header_raw: src.header_raw.clone(),
+            header_raw,
             events: out,
             trailing: src.trailing.clone(),
         },

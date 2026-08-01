@@ -61,6 +61,7 @@ pub mod op {
     pub const CHANNEL_DECO: u8 = 0xD7;
     pub const NOTES: u8 = 0xE0;
     pub const MIXER_PARAMS: u8 = 0xE1;
+    pub const AUTOMATION_LINK: u8 = 0xE3;
     pub const PLAYLIST: u8 = 0xE9;
     pub const ROUTE_TABLE: u8 = 0xEB;
     pub const INSERT_FLAGS: u8 = 0xEC;
