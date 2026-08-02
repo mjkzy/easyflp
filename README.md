@@ -17,7 +17,7 @@ the converted file is written next to the input project as `<name>_easy.flp`. fo
 ## build
 
 1. install Rust from https://rustup.rs
-2. run `build.bat` or `build_and_run.bat` on windows, or `cargo build --release` on mac/linux.
+2. run `build.bat` or `build_and_run.bat` on windows, `build.sh` or `build_and_run.sh` on linux, or `cargo build --release` on mac.
 
 ## cli
 
