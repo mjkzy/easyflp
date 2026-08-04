@@ -23,9 +23,9 @@ const FL20_REGISTRATION: [u8; 50] = [
    plus 0xAC (25's fixed-3-byte event). 0x68 is absent on purpose: it converts to 0x16 before
    deletion would apply. 0xD8 was here until two genuine 20.8.4.2576 saves proved it is a
    v20-era event (see FORMAT.md). */
-const POST_FL20_OPS: [u8; 22] = [
-    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x65, 0x67, 0xA5, 0xA6,
-    0xA7, 0xA8, 0xA9, 0xAA, 0xAC, 0xF2, 0xF3,
+const POST_FL20_OPS: [u8; 27] = [
+    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x65, 0x67, 0xA5,
+    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xC0, 0xF2, 0xF3, 0xFC, 0xFD,
 ];
 
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
@@ -1717,6 +1717,27 @@ mod tests {
                     .to_string()
             ]
         );
+    }
+
+    #[test]
+    fn deletes_post_25_pattern_and_header_events() {
+        let body = vec![
+            Event { op: 0xC0, payload: Payload::Blob(b"F\0L\0 \0S\0t\0u\0d\0i\0o\0".to_vec()) },
+            Event { op: op::PATTERN_NEW, payload: Payload::U16(1) },
+            Event { op: 0xA4, payload: Payload::U32(0) },
+            Event { op: 0x34, payload: Payload::U8(0) },
+            Event { op: 0xAB, payload: Payload::U32(0) },
+            Event { op: 0xFC, payload: Payload::Blob(vec![0, 0]) },
+            Event { op: 0xFD, payload: Payload::Blob(vec![0; 48]) },
+        ];
+
+        let (ops, outcome) = converted_ops(&marker_flp(body));
+        assert_eq!(ops, vec![op::VERSION, op::PATTERN_NEW, 0xA4]);
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert!(outcome
+            .notes
+            .iter()
+            .any(|note| note == "deleted 5 post-v20 events"));
     }
 
     #[test]
