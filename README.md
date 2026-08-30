@@ -2,6 +2,8 @@
 
 a `.flp` viewer & backport utility for 🥭 version `20.8` *(2020)*
 
+this is a **work in progress** project, and may have bugs.
+
 ## how to use
 
 1. run `build_and_run.bat` (builds, kills previous process, runs)
@@ -21,7 +23,7 @@ the converted file is written next to the input project as `<name>_easy.flp`. fo
 
 ## cli
 
-the backbone of the app is entirely cli for easy usage, but also bundles a basic GUI viewer for people to easily use also. to use the app in command line, you can do the following commands for usage:
+the app is cli, but also bundles a basic GUI .exe for people to use too. usage:
 
 ```
 easyflp info <file.flp|file.zip>       print project information
@@ -39,19 +41,8 @@ the converter rewrites the event stream to the byte-verified *20.8* profile. it 
 
 tldr:
 - rewrites the version to `20.8.4.2576` specifically
-- deletes the 19 event types that *20.8* never writes
 - convert *25* channel routing (`0x68`) to the *20.8* form (`0x16`)
-- rewrites playlist clip records to the 32 byte *20.8* layout
-- rewrites the plugin wrapper serialization marker from 12 to 10
-- rebuilds the mixer parameter table in *20.8* canonical 4697-record shape
-
-## current limits
-
-this is a **work in progress** project, and may need additional research for more detailed opcodes and information within a project file.
-
-- folds a consistent *25* per-clip stretch scale into the channel's *20.8* stretch time
-- v20 recomputes stretched clip lengths from the clip trims on load, so the converter aligns the trim window to make that recompute land on the source length
-- the parser must reproduce the input byte exact before conversion is allowed. a file that fails this check loads as information only.
+- rewrites playlist clip records to the *20.8* layout
 
 ## contributing
 
