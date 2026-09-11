@@ -8,8 +8,8 @@ this is a **work in progress** project, and may have bugs.
 
 1. run `build_and_run.bat` (builds, kills previous process, runs)
 2. drop a `.flp` or `.zip` containing a FLP file onto the box, or click it to open file explorer
-3. if you want to convert the project, click the **convert to v20 project** button
-4. the **⚠ convert to v10 project** button writes a `10.0.9` project instead. this profile is experimental: inserts above 99, effect slots 9-10, send levels, clip fades and plugin states newer than FL 10 do not survive. read the warnings it prints.
+3. if you want to convert the project to version `20.0.5`, click the **convert to v20 project** button
+4. the **⚠ convert to v10 project** button writes a `10.0.9` project instead. the inserts above 99, effect slots 9-10, send levels, clip fades and plugin states do not convert well
 
 the converted file is written next to the input project as `<name>_easy.flp` (`<name>_easy10.flp` for the v10 profile). for a `.zip` looped package, the output is `<name>_easy.zip` with the converted `.flp` and all other files unchanged.
 
@@ -51,6 +51,6 @@ the v10 profile runs the *20.8* transform first, then rewrites the stream into t
 
 ## contributing
 
-the best way is to differentiate two `.flp` files by first creating one in version *20.8* of the program, and then opening that **same project** in version *25* or newer of the program (or your version of choice). doing this and saving both projects as `.flp` will allow you to do research of both files. 
+the best way is to differentiate two `.flp` files by first creating one in version *20.0.5* of the program or earlier, and then opening that **same project** in version *25* or newer of the program (or your version of choice). doing this and saving both projects as `.flp` will allow you to do research of both files. 
 
 if you are using AI to assist you, or a AI agent doing this yourself, read the **AGENTS.md** file on how to contribute to the reverse engineering more in depth with context. opcodes may need more research in the future in order to show more information or convert stuff properly backwards if you see any bugs/problems.

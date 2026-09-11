@@ -10,9 +10,131 @@ const FL200_REGISTRATION: [u8; 12] = [
     0x3C, 0x00, 0x37, 0x00, 0x38, 0x00, 0x31, 0x00, 0x44, 0x00, 0x00, 0x00,
 ];
 
-const POST_FL200_OPS: [u8; 3] = [0x26, 0x27, 0x28];
+const POST_FL200_OPS: [u8; 6] = [0x26, 0x27, 0x28, 0x9D, 0x9E, 0xA4];
 
 const FL200_D7_LEN: usize = 157;
+
+/* the plugin folders of a 20.0.5 install, Plugins\Fruity\Effects and \Generators. the
+   internal name of a plugin matches its folder name case-insensitively. a native effect outside
+   the list did not ship with 20.0.5; 20.0.5 reports it missing and stops soon after. */
+const FL200_EFFECTS: [&str; 68] = [
+    "Control Surface",
+    "EQUO",
+    "Edison",
+    "Effector",
+    "Fruity 7 Band EQ",
+    "Fruity Balance",
+    "Fruity Bass Boost",
+    "Fruity Big Clock",
+    "Fruity Center",
+    "Fruity Chorus",
+    "Fruity Compressor",
+    "Fruity Convolver",
+    "Fruity Delay",
+    "Fruity Delay 2",
+    "Fruity Delay 3",
+    "Fruity Delay Bank",
+    "Fruity Fast Dist",
+    "Fruity Fast LP",
+    "Fruity Filter",
+    "Fruity Flanger",
+    "Fruity Flangus",
+    "Fruity Formula Controller",
+    "Fruity Free Filter",
+    "Fruity HTML NoteBook",
+    "Fruity LSD",
+    "Fruity Limiter",
+    "Fruity Love Philter",
+    "Fruity Multiband Compressor",
+    "Fruity Mute 2",
+    "Fruity NoteBook",
+    "Fruity NoteBook 2",
+    "Fruity PanOMatic",
+    "Fruity Parametric EQ",
+    "Fruity Parametric EQ 2",
+    "Fruity Peak Controller",
+    "Fruity Phase Inverter",
+    "Fruity Phaser",
+    "Fruity Reeverb",
+    "Fruity Reeverb 2",
+    "Fruity Scratcher",
+    "Fruity Send",
+    "Fruity Soft Clipper",
+    "Fruity Spectroman",
+    "Fruity Squeeze",
+    "Fruity Stereo Enhancer",
+    "Fruity Stereo Shaper",
+    "Fruity Vocoder",
+    "Fruity WaveShaper",
+    "Fruity Wrapper",
+    "Fruity X-Y Controller",
+    "Fruity X-Y-Z Controller",
+    "Fruity dB Meter",
+    "Gross Beat",
+    "Hardcore",
+    "Maximus",
+    "Newtone",
+    "Patcher",
+    "Pitcher",
+    "Razer Chroma",
+    "Soundgoodizer",
+    "Transient Processor",
+    "VFX Color Mapper",
+    "VFX Key Mapper",
+    "VFX Keyboard Splitter",
+    "VFX Level Scaler",
+    "Vocodex",
+    "Wave Candy",
+    "ZGameEditor Visualizer",
+];
+
+const FL200_GENERATORS: [&str; 45] = [
+    "3x Osc",
+    "Autogun",
+    "BassDrum",
+    "BeepMap",
+    "BooBass",
+    "Dashboard",
+    "DirectWave",
+    "Drumaxx",
+    "Drumpad",
+    "FL Keys",
+    "FL Slayer",
+    "FL Studio Mobile",
+    "FPC",
+    "Fruit Kick",
+    "Fruity DX10",
+    "Fruity Dance",
+    "Fruity DrumSynth Live",
+    "Fruity Envelope Controller",
+    "Fruity Granulizer",
+    "Fruity Keyboard Controller",
+    "Fruity Slicer",
+    "Fruity Soundfont Player",
+    "Fruity Video Player",
+    "Fruity Wrapper",
+    "GMS",
+    "Harmless",
+    "Harmor",
+    "MIDI Out",
+    "MiniSynth",
+    "Morphine",
+    "Ogun",
+    "Patcher",
+    "Plucked!",
+    "PoiZone",
+    "ReWired",
+    "Sakura",
+    "Sawer",
+    "SimSynth",
+    "Slicex",
+    "Sytrus",
+    "Toxic Biohazard",
+    "Transistor Bass",
+    "Wasp",
+    "Wasp XT",
+    "Wave Traveller",
+];
 const FL200_LANE_LEN: usize = 62;
 /* 20.1 raised the playlist from 199 to 500 tracks. 20.0.5 stops with "invalid data" on a lane
    record above 199. lanes are stored as 500 - track, so track 199 is lane 301. */
@@ -41,6 +163,13 @@ const LIMITER_LEN_FL200: usize = 168;
    plugin state is carried through unchanged and reported. */
 const NATIVE_UNCHANGED: [&str; 3] = ["Fruity Delay 2", "Fruity Delay 3", "Fruity Parametric EQ"];
 
+/* 20.0.5 hangs at playback on a Parametric EQ 2 state of version 7 or 8 (354 bytes). no 20.0.5
+   save of the plugin is available. the 10.0.9 form (version 2, 305 bytes, verified in the 10
+   profile) is the oldest form 20.0.5 loads. */
+const EQ2_STATES_NEWER: [u32; 2] = [7, 8];
+const EQ2_STATE_FL10: u32 = 2;
+const EQ2_LEN_FL10: usize = 305;
+
 struct Counts {
     deleted: usize,
     wrappers: usize,
@@ -48,6 +177,7 @@ struct Counts {
     host_chunks: usize,
     option_flags: usize,
     limiters: usize,
+    eq2: usize,
     lanes: usize,
     lane_src_len: usize,
     lanes_dropped: usize,
@@ -56,6 +186,12 @@ struct Counts {
     channel_colours: usize,
     d7: usize,
     unverified: Vec<String>,
+    effects_dropped: Vec<String>,
+    generators_kept: Vec<String>,
+}
+
+fn native_exists(shipped: &[&str], name: &str) -> bool {
+    name.is_empty() || name == "Fruity Wrapper" || shipped.iter().any(|s| s.eq_ignore_ascii_case(name))
 }
 
 fn wrapper_state_fl200(b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
@@ -90,11 +226,20 @@ fn native_state_fl200(name: &str, b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
     if NATIVE_UNCHANGED.contains(&name) {
         return Some(b.to_vec());
     }
-    if name != "Fruity Limiter" || b.len() < 4 {
+    if b.len() < 4 {
         return None;
     }
     let marker = u32::from_le_bytes(b[0..4].try_into().unwrap());
-    if marker != LIMITER_STATE_FL208 || b.len() < LIMITER_LEN_FL200 {
+    if name == "Fruity Parametric EQ 2" {
+        if !EQ2_STATES_NEWER.contains(&marker) || b.len() < EQ2_LEN_FL10 {
+            return None;
+        }
+        let mut nb = b[..EQ2_LEN_FL10].to_vec();
+        nb[0..4].copy_from_slice(&EQ2_STATE_FL10.to_le_bytes());
+        c.eq2 += 1;
+        return Some(nb);
+    }
+    if name != "Fruity Limiter" || marker != LIMITER_STATE_FL208 || b.len() < LIMITER_LEN_FL200 {
         return None;
     }
     let mut nb = b[..LIMITER_LEN_FL200].to_vec();
@@ -123,6 +268,7 @@ pub fn fl208_to_fl200(
         host_chunks: 0,
         option_flags: 0,
         limiters: 0,
+        eq2: 0,
         lanes: 0,
         lane_src_len: 0,
         lanes_dropped: 0,
@@ -131,11 +277,24 @@ pub fn fl208_to_fl200(
         channel_colours: 0,
         d7: 0,
         unverified: Vec::new(),
+        effects_dropped: Vec::new(),
+        generators_kept: Vec::new(),
     };
     let mut out: Vec<Event> = Vec::with_capacity(src.events.len());
     let mut current_plugin = String::new();
+    let mut in_mixer = false;
+    let mut skip_slot = false;
 
     for ev in &src.events {
+        if ev.op == op::INSERT_FLAGS {
+            in_mixer = true;
+        }
+        if skip_slot {
+            if ev.op == op::WRAPPER {
+                skip_slot = false;
+            }
+            continue;
+        }
         match ev.op {
             o if POST_FL200_OPS.contains(&o) => c.deleted += 1,
             op::VERSION => {
@@ -158,6 +317,14 @@ pub fn fl208_to_fl200(
             }
             op::PLUGIN_INTERNAL_NAME => {
                 current_plugin = ev.blob().map(flp::utf16z).unwrap_or_default();
+                if in_mixer && !native_exists(&FL200_EFFECTS, &current_plugin) {
+                    c.effects_dropped.push(current_plugin.clone());
+                    skip_slot = true;
+                    continue;
+                }
+                if !in_mixer && !native_exists(&FL200_GENERATORS, &current_plugin) {
+                    c.generators_kept.push(current_plugin.clone());
+                }
                 out.push(ev.clone());
             }
             op::WRAPPER => {
@@ -288,6 +455,16 @@ pub fn fl208_to_fl200(
             plural(c.limiters)
         ));
     }
+    if c.eq2 > 0 {
+        notes.push(format!(
+            "Fruity Parametric EQ 2 state {} -> {EQ2_STATE_FL10} ({EQ2_LEN_FL10} bytes, the 10.0.9 form) on {} plugin{}",
+            "7/8", c.eq2, plural(c.eq2)
+        ));
+        warnings.push(format!(
+            "{} Fruity Parametric EQ 2 state{} written in the 10.0.9 form; a 20.0.5 save of the plugin is needed to verify the settings survive",
+            c.eq2, plural(c.eq2)
+        ));
+    }
     if c.lane_colours > 0 {
         notes.push(format!("set {} default lane colours to the 20.0.5 value", c.lane_colours));
     }
@@ -295,6 +472,22 @@ pub fn fl208_to_fl200(
         notes.push(format!(
             "set {} default channel colours to the 20.0.5 value",
             c.channel_colours
+        ));
+    }
+    if !c.effects_dropped.is_empty() {
+        warnings.push(format!(
+            "{} mixer effect{} dropped, the plugin did not exist in 20.0.5: {}",
+            c.effects_dropped.len(),
+            plural(c.effects_dropped.len()),
+            c.effects_dropped.join(", ")
+        ));
+    }
+    if !c.generators_kept.is_empty() {
+        warnings.push(format!(
+            "{} generator{} kept although the plugin did not exist in 20.0.5, 20.0.5 will report it missing: {}",
+            c.generators_kept.len(),
+            plural(c.generators_kept.len()),
+            c.generators_kept.join(", ")
         ));
     }
     if !c.unverified.is_empty() {
@@ -381,6 +574,7 @@ mod tests {
             host_chunks: 0,
             option_flags: 0,
             limiters: 0,
+            eq2: 0,
             lanes: 0,
             lane_src_len: 0,
             lanes_dropped: 0,
@@ -389,6 +583,8 @@ mod tests {
             channel_colours: 0,
             d7: 0,
             unverified: Vec::new(),
+            effects_dropped: Vec::new(),
+            generators_kept: Vec::new(),
         }
     }
 
