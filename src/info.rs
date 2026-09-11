@@ -89,6 +89,37 @@ fn wrapper_name(blob: &[u8]) -> Option<String> {
     None
 }
 
+/* 20 closes every effect slot with 0x62, filled or not. 10 writes no slot-close event: the
+   next plugin name or the insert's route table ends the slot. */
+fn close_slot(
+    info: &mut ProjectInfo,
+    insert_idx: isize,
+    slot_idx: &mut usize,
+    internal: &mut Option<String>,
+    display: &mut Option<String>,
+    wrapper: &mut Option<String>,
+    always_advance: bool,
+) {
+    let filled = internal.is_some() || wrapper.is_some();
+    if filled {
+        info.effects.push(EffectInfo {
+            insert: insert_idx.max(0) as usize,
+            slot: *slot_idx,
+            name: wrapper
+                .take()
+                .or(display.take())
+                .or(internal.take())
+                .unwrap_or_default(),
+        });
+    }
+    if filled || always_advance {
+        *slot_idx += 1;
+    }
+    *internal = None;
+    *display = None;
+    *wrapper = None;
+}
+
 pub fn extract(flp: &Flp) -> ProjectInfo {
     let mut info = ProjectInfo {
         version: flp.version().unwrap_or_else(|| "unknown".into()),
@@ -113,6 +144,13 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
         mixer_param_base: None,
         op_histogram: Vec::new(),
     };
+
+    /* 12+ writes UTF-16 text events; 10 and 11 write ANSI. 10 also splits the tempo into a
+       coarse (0x42) and fine (0x5D) word and names channels with 0xC0 instead of 0xCB. */
+    let ansi = info.major > 0 && info.major < 12;
+    let text = |b: &[u8]| if ansi { flp::asciiz(b) } else { flp::utf16z(b) };
+    let mut tempo_coarse = 0u32;
+    let mut tempo_fine = 0u32;
 
     let mut patterns: BTreeMap<u32, PatternInfo> = BTreeMap::new();
     let mut current_pattern: Option<u32> = None;
@@ -160,11 +198,13 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
         match ev.op {
             op::BUILD => info.build = ev.value(),
             op::TEMPO => info.tempo = ev.value().unwrap_or(0) as f64 / 1000.0,
+            0x42 => tempo_coarse = ev.value().unwrap_or(0),
+            0x5D => tempo_fine = ev.value().unwrap_or(0),
             op::TIMESIG_NUM => info.timesig.0 = ev.value().unwrap_or(4),
             op::TIMESIG_DEN => info.timesig.1 = ev.value().unwrap_or(4),
             op::TITLE => {
                 if let Some(b) = ev.blob() {
-                    info.title = flp::utf16z(b);
+                    info.title = text(b);
                 }
             }
             op::CHANNEL_NEW => {
@@ -189,22 +229,38 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
             op::CHANNEL_ROUTE_FL25 => has68 = true,
             op::SAMPLE_PATH => {
                 if let (Some(c), Some(b)) = (chan.as_mut(), ev.blob()) {
-                    c.sample = Some(flp::utf16z(b));
+                    c.sample = Some(text(b));
                 }
             }
             op::PLUGIN_INTERNAL_NAME => {
                 if let Some(b) = ev.blob() {
-                    let s = flp::utf16z(b);
+                    let s = text(b);
                     if in_mixer {
+                        if ansi {
+                            close_slot(
+                                &mut info,
+                                insert_idx,
+                                &mut slot_idx,
+                                &mut slot_internal,
+                                &mut slot_display,
+                                &mut slot_wrapper,
+                                false,
+                            );
+                        }
                         slot_internal = Some(s).filter(|s| !s.is_empty());
                     } else if let Some(c) = chan.as_mut() {
                         c.internal = Some(s).filter(|s| !s.is_empty());
                     }
                 }
             }
+            0xC0 if ansi => {
+                if let (Some(c), Some(b)) = (chan.as_mut(), ev.blob()) {
+                    c.name = Some(text(b));
+                }
+            }
             op::NAME => {
                 if let Some(b) = ev.blob() {
-                    let s = flp::utf16z(b);
+                    let s = text(b);
                     if in_mixer {
                         slot_display = Some(s).filter(|s| !s.is_empty());
                     } else if let Some(c) = chan.as_mut() {
@@ -236,7 +292,7 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
             op::PATTERN_NAME => {
                 if let (Some(id), Some(b)) = (current_pattern, ev.blob()) {
                     if let Some(p) = patterns.get_mut(&id) {
-                        p.name = Some(flp::utf16z(b));
+                        p.name = Some(text(b));
                     }
                 }
             }
@@ -273,6 +329,17 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
                 if info.route_table_size.is_none() {
                     info.route_table_size = ev.blob().map(|b| b.len());
                 }
+                if ansi && in_mixer {
+                    close_slot(
+                        &mut info,
+                        insert_idx,
+                        &mut slot_idx,
+                        &mut slot_internal,
+                        &mut slot_display,
+                        &mut slot_wrapper,
+                        false,
+                    );
+                }
             }
             op::INSERT_FLAGS => {
                 if let Some(c) = chan.take() {
@@ -287,21 +354,15 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
             }
             op::SLOT_CLOSE => {
                 if in_mixer {
-                    if slot_internal.is_some() || slot_wrapper.is_some() {
-                        info.effects.push(EffectInfo {
-                            insert: insert_idx.max(0) as usize,
-                            slot: slot_idx,
-                            name: slot_wrapper
-                                .take()
-                                .or(slot_display.take())
-                                .or(slot_internal.take())
-                                .unwrap_or_default(),
-                        });
-                    }
-                    slot_internal = None;
-                    slot_display = None;
-                    slot_wrapper = None;
-                    slot_idx += 1;
+                    close_slot(
+                        &mut info,
+                        insert_idx,
+                        &mut slot_idx,
+                        &mut slot_internal,
+                        &mut slot_display,
+                        &mut slot_wrapper,
+                        true,
+                    );
                 }
             }
             op::MIXER_PARAMS => {
@@ -321,6 +382,9 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
     }
     if let Some(c) = chan.take() {
         flush_chan(c, &mut info.channels);
+    }
+    if info.tempo == 0.0 && tempo_coarse > 0 {
+        info.tempo = tempo_coarse as f64 + tempo_fine as f64 / 1000.0;
     }
 
     info.route_style = match (has16, has68) {

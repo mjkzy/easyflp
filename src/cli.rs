@@ -6,7 +6,11 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         Some("info") | Some("--info") => cmd_info(args.get(1).map(PathBuf::from)),
-        Some("convert") | Some("--convert") => cmd_convert(args.get(1).map(PathBuf::from)),
+        Some("convert") | Some("--convert") => {
+            let fl10 = args.iter().skip(1).any(|a| a == "--fl10" || a == "--v10");
+            let path = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
+            cmd_convert(path, if fl10 { ops::Target::Fl10 } else { ops::Target::Fl20 })
+        }
         Some("gui") => cmd_gui(args.get(1)),
         Some(p) if PathBuf::from(p).exists() => cmd_gui(args.first()),
         _ => {
@@ -22,7 +26,8 @@ fn usage() {
     eprintln!();
     eprintln!("usage:");
     eprintln!("  easyflp info <file.flp|file.zip>       print project information");
-    eprintln!("  easyflp convert <file.flp|file.zip>    write <name>_easy next to the input");
+    eprintln!("  easyflp convert <file.flp|file.zip>    write <name>_easy (v20.8) next to the input");
+    eprintln!("  easyflp convert --fl10 <file>          write <name>_easy10 (v10.0.9) — experimental");
     eprintln!("  easyflp gui [file]                     launch the graphical viewer");
 }
 
@@ -49,7 +54,7 @@ fn cmd_gui(path: Option<&String>) -> i32 {
     }
 }
 
-fn cmd_convert(path: Option<PathBuf>) -> i32 {
+fn cmd_convert(path: Option<PathBuf>, target: ops::Target) -> i32 {
     let Some(path) = path else {
         usage();
         return 2;
@@ -61,7 +66,7 @@ fn cmd_convert(path: Option<PathBuf>) -> i32 {
             return 1;
         }
     };
-    match ops::convert_and_write(&loaded) {
+    match ops::convert_and_write(&loaded, target) {
         Ok(done) => {
             println!("wrote {}", done.out.display());
             for n in &done.notes {

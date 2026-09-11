@@ -15,8 +15,12 @@ const DIM: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x68);
 const WHITE: Color32 = Color32::from_rgb(0xE9, 0xE9, 0xEF);
 const OK: Color32 = Color32::from_rgb(0x45, 0xD8, 0x6A);
 const ERR: Color32 = Color32::from_rgb(0xFF, 0x4D, 0x6A);
+const WARN: Color32 = Color32::from_rgb(0xF5, 0xB8, 0x3D);
 
 const HOVER_ANIM_SECS: f32 = 0.18;
+
+const FL10_HINT: &str = "experimental: writes a 10.0.9 project. inserts above 99, slots 9-10, \
+send levels, clip fades and post-v10 plugin states do not survive - read the warnings";
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     egui::lerp(egui::Rgba::from(a)..=egui::Rgba::from(b), t).into()
@@ -67,11 +71,11 @@ impl App {
         }
     }
 
-    fn run_convert(&mut self) {
+    fn run_convert(&mut self, target: ops::Target) {
         self.done = None;
         self.error = None;
         let Some(l) = &self.loaded else { return };
-        match ops::convert_and_write(l) {
+        match ops::convert_and_write(l, target) {
             Ok(done) => self.done = Some(done),
             Err(e) => self.error = Some(e),
         }
@@ -148,20 +152,33 @@ impl App {
                     if logo.clicked() {
                         self.go_home();
                     }
-                    let convertible = self
+                    let (ok, major) = self
                         .loaded
                         .as_ref()
-                        .map(|l| l.roundtrip_ok && l.info.major > 20)
-                        .unwrap_or(false);
+                        .map(|l| (l.roundtrip_ok, l.info.major))
+                        .unwrap_or((false, 0));
+                    let convertible = |target: ops::Target| ok && target.applicable(major);
                     if ui
                         .add_enabled(
-                            convertible,
+                            convertible(ops::Target::Fl20),
                             egui::Button::new(RichText::new("convert to v20 project").color(ACCENT))
                                 .fill(BTN),
                         )
                         .clicked()
                     {
-                        self.run_convert();
+                        self.run_convert(ops::Target::Fl20);
+                    }
+                    if ui
+                        .add_enabled(
+                            convertible(ops::Target::Fl10),
+                            egui::Button::new(RichText::new("\u{26A0} convert to v10 project").color(WARN))
+                                .fill(BTN),
+                        )
+                        .on_hover_text(FL10_HINT)
+                        .on_disabled_hover_text(FL10_HINT)
+                        .clicked()
+                    {
+                        self.run_convert(ops::Target::Fl10);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
@@ -442,9 +459,12 @@ impl App {
                         .color(ERR),
                     );
                 }
-                if l.info.major <= 20 && l.roundtrip_ok {
+                if l.info.major <= 10 && l.roundtrip_ok {
                     ui.add_space(12.0);
                     ui.label(RichText::new("nothing to convert").color(OK));
+                } else if l.info.major <= 20 && l.roundtrip_ok {
+                    ui.add_space(12.0);
+                    ui.label(RichText::new("already v20 or older - only the v10 profile applies").color(OK));
                 }
 
                 if let Some(done) = &self.done {
@@ -459,6 +479,13 @@ impl App {
                     }
                     for w in &done.warnings {
                         ui.label(RichText::new(format!("! {w}")).color(VIOLET).monospace());
+                    }
+                    if done.target == ops::Target::Fl10 {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new("\u{26A0} v10 output is experimental - open it in FL 10 and check the mixer, plugins and playlist")
+                                .color(WARN),
+                        );
                     }
                 }
                 if let Some(err) = &self.error {

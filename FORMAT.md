@@ -95,6 +95,71 @@ A time marker is a `0x94` position, then `0x21` numerator, `0x22` denominator, a
 
 The rules follow from that evidence. Delete `0x2D`, `0x2E`, `0x65`, and `0xA8` everywhere. Drop the whole marker run inside a pattern block. Keep arrangement markers. A dropped run that is not the default 4/4 loses a pattern time signature, so the converter warns.
 
+## The transform, 20.8 to 10.0.9 (experimental profile)
+
+The FL 10 profile runs the 20.8 transform first, then rewrites the 20.8 stream into the 10.0.9 layout. Every rule below comes from one truth pair: a project saved by *10.0.9* and the same project opened and saved by *21.2.3*. The converter output for that pair matches the *10.0.9* save event for event. The remaining differences are theme colours, window rectangles, run-time pointer bytes, and the VST plugins' own state chunks.
+
+*10* writes every text event as a NUL-terminated ANSI string. *12* and later write UTF-16. The channel name is `0xC0` in *10* and `0xCB` in *20*.
+
+| structure | 20.8 form | 10.0.9 form | action |
+|---|---|---|---|
+| `0xC7` version | `"20.8.4.2576"` | `"10.0.9"` | rewrite |
+| `0x9F` build, `0x25`, `0x23`, `0x2C`, `0xA7` | present | absent | delete |
+| `0x1C` | 1 | 3 | rewrite |
+| `0xC8` registration | 50 bytes UTF-16 | 22 bytes ANSI | replace with the *10* blob |
+| `0x9C` tempo | u32, BPM × 1000 | `0x5D` u16 fine (thousandths) then `0x42` u16 coarse BPM | split; the fine field is unverified (both truth tempos are integers) |
+| `0xC3` comment | UTF-16 text | `0xC6` RTF document | wrap in the *10* RTF template |
+| text events | UTF-16 | ANSI | rewrite; code points above U+00FF become `?` |
+| channel block | `40 15 C9 D4 CB 9B 80 [D5] 00 … 91 [EA] 20 E4 E4 DA×5 8F 14 [C4]` | `40 15 [C9 D4 D5] 00 … 91 [EA] E4 E4 DA×5 8F 14 [C4] C0 9B 80` | drop `C9`/`D4` on non-plugin kinds; drop `0x20 0x61 0x29`; move the name (as `0xC0`), `0x9B`, `0x80` to the end |
+| `0xD7` channel blob | 158 bytes | 112 bytes | truncate (leading bytes agree) |
+| `0xD7` stretch mode (offset 108) | 6 = Pro default, 0 = none | 1, 0 | map 6→1, 0→0; other modes become 1 with a warning |
+| pattern block | `41 [C1] 96 9D 9E A4` | `41 [C1] 96 97` | drop `9D 9E A4`; add `97` = 0 |
+| `0xE9` clip records | 32 bytes, lane = 500 − track | 32 bytes, lane = 99 − track | lane − 401; lanes below 0 (track > 99) clamp to 0 |
+| `0xEE` lane records | 66 bytes, index 0..499 | 22 bytes, index 1..99 | truncate; drop index 0 and above 99 |
+| `0xEF` lane name, `0x63 0xF1 0x24 0x64 0x27 0x28 0x1F 0x26` | present | absent | delete |
+| insert block | `[95] [2A] [CC] EC(12) (C9 D4 [CB] 9B 80 D5 62 or 62)×10 EB(127) 9A 93` | `[95] [CC] 1B(12) EC(5) (C9 D4 [CB] D5)* EB(105) 9A 93` | rebuild; slots 9 and 10 are dropped with a warning |
+| `0xEC` insert flags | 12 bytes, flags at offset 4 | `00 00 00 00 01` | replace; a disabled insert (flag 0x08 clear) loads enabled |
+| mixer strips | 127: master, inserts 1..125, current 126 | 105: master, inserts 1..99, send buses 100..103, current 104 | drop 100..125; 126 → 104; insert the four send-bus blocks |
+| `0xEB` route table | 127 bytes | 105 bytes | copy 0..99; bytes 100..103 are 1 on every insert 1..99 (the *10* convention), 0 elsewhere |
+| `0xE1` param table | 4697 records | 2941 records: header + 105 × (8 slot pairs + 12 pids) | rebuild; no send levels (164..168) and no pid 190 |
+| `0xD8`, `0xE3` mixer targets | strips 0..126 | strips 0..104 | remap 126 → 104; drop targets on 100..125 |
+| "Fruity Wrapper" `0xD5` | state version 10, chunk 56 present, chunk 2 bytes 12/17 = `A0`/`01` | version 7, no chunk 56, bytes 12/17 = 0 | rewrite |
+| Fruity Limiter `0xD5` | version 7, 169 bytes | version 6, 168 bytes | rewrite the version, truncate |
+| Fruity Parametric EQ 2 `0xD5` | version 7 or 8, 354 bytes | version 2, 305 bytes | rewrite the version, truncate |
+| Fruity Reeverb 2 `0xD5` | `0x2711`, 66 bytes | `0x2710`, 58 bytes | rewrite the version; remove the 8 bytes inserted at offset 56 |
+| Fruity Delay 2, Fruity Soft Clipper | 32 / 8 bytes | identical | pass through |
+| Fruity Blood Overdrive, Reeverb, Phaser, Chorus, Balance | native `C9 "<name>"` + int-parameter `0xD5` | `C9 "Fruity Wrapper"` + `CB "<name>"` + wrapper `0xD5` around a VST DLL | replace with the *10* wrapper template; map parameters (see below) |
+| stream tail | `0xE1 0x85` | `0xE1 0x85` | `0x85` passes through |
+
+The deleted event set is the opcode difference between the two truth files, minus the structurally handled `0x62`, `0x9C`, and `0xC3`: `0x1F 0x20 0x23 0x24 0x25 0x26 0x27 0x28 0x29 0x2A 0x2B 0x2C 0x2F 0x61 0x63 0x64 0x9D 0x9E 0x9F 0xA4 0xA5 0xA6 0xA7 0xF1 0xF2 0xF3`. Time-signature marker fields (`0x21`/`0x22` after a `0x94`) did not exist in *10* and are dropped with a warning when they are not 4/4.
+
+### The "routed to insert 100" symptom
+
+A *10* save sets bytes 100..103 of every insert's `0xEB` route table. These are the four fixed send buses, which every insert feeds at level 0. *21* copies the table verbatim and shows the inserts routed to inserts 100..103. The *20.8* `0xE1` send pids 164..168 (route levels to strips 100..104) are a fossil of the same layout.
+
+### Legacy effects hosted as VST DLLs
+
+In *10* the Fruity Blood Overdrive, Fruity Reeverb, Fruity Phaser, Fruity Chorus, and Fruity Balance effects are VST DLLs under `%FLStudioPlugins%\Fruity\Effects\`, hosted by Fruity Wrapper. Their wrapper chunk 53 is the DLL's state: a 13-byte head `F7 FF FF FF 05 00 00 00 00 00 00 00 00`, a u32 parameter count, that many f32 values in 0..1, a u32 1, and a preset name. *21* hosts them natively with an int-parameter state.
+
+The truth pair holds each effect once, at default settings, so each parameter mapping rests on one data point. The mappings the converter applies:
+
+- Balance (no version word): pan `(v + 128) / 256`, volume `v / 320`.
+- Phaser (version word, 9 params): `v / 5000`, `v / 1000`, `v / 1000`, `v / 1000`, `v / 1024`, stages `v / 23`, `v / 1000`, `v / 1024`, `v / 5000`.
+- Reeverb (version word, 10 params): `v / 65536` for all but index 5, which is `v / 40`.
+- Chorus (version word, 12 params): `v / 1024`, `v / 5000`, `v / 1024`, then `v / 5000` for the rest.
+- Blood Overdrive: the native state has 8 parameters and the DLL 6; no mapping. The *10* default state is written and the converter warns.
+
+Unknown plugins keep their state unchanged and are reported.
+
+### Open questions for the 10 profile
+
+- `0x5D` fine tempo: the PyFLP name is "TempoFine"; the encoding as thousandths is unverified.
+- `0x1B` = 12 before every insert, `0x97` = 0 after every pattern colour: meaning unknown, values constant.
+- Send levels: *10* stores none in `0xE1`. Where the send knobs live is unknown.
+- `0xEC` 5-byte flags: only `00 00 00 00 01` observed.
+- Stretch modes other than 0 and 6.
+- *10* omitted three of the 99 lane records for a reason not understood; *21* filled them with byte 12 = 1. The converter writes all 99.
+
 ## Version and structure are independent
 
 The program's loaders select nothing from the claimed `0xC7` version. *24* rejects 66-byte lane records in a file that claims *21*, and accepts 70-byte lanes in the same file. A converter must rewrite structures, not headers.
@@ -102,4 +167,4 @@ The program's loaders select nothing from the claimed `0xC7` version. *24* rejec
 ## Safety gates
 
 - The parser must reproduce the input byte-exact (`serialize(parse(x)) == x`) before the convert button enables. This proves no event was misread.
-- Events that survive conversion but are outside the known *20.8* opcode set are reported as warnings, never deleted silently.
+- Events that survive conversion but are outside the known *20.8* opcode set are reported as warnings, never deleted silently. The 10 profile applies the same gate against the *10.0.9* opcode set.
