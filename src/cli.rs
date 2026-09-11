@@ -26,7 +26,7 @@ fn usage() {
     eprintln!();
     eprintln!("usage:");
     eprintln!("  easyflp info <file.flp|file.zip>       print project information");
-    eprintln!("  easyflp convert <file.flp|file.zip>    write <name>_easy (v20.8) next to the input");
+    eprintln!("  easyflp convert <file.flp|file.zip>    write <name>_easy (v20.0.5) next to the input");
     eprintln!("  easyflp convert --fl10 <file>          write <name>_easy10 (v10.0.9) — experimental");
     eprintln!("  easyflp gui [file]                     launch the graphical viewer");
 }

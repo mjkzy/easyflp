@@ -19,6 +19,8 @@ const WARN: Color32 = Color32::from_rgb(0xF5, 0xB8, 0x3D);
 
 const HOVER_ANIM_SECS: f32 = 0.18;
 
+const FL20_HINT: &str = "writes the 20.0.5.681 layout. it opens in FL 20.0.5 and in every later 20.x version";
+
 const FL10_HINT: &str = "experimental: writes a 10.0.9 project. inserts above 99, slots 9-10, \
 send levels, clip fades and post-v10 plugin states do not survive - read the warnings";
 
@@ -152,18 +154,20 @@ impl App {
                     if logo.clicked() {
                         self.go_home();
                     }
-                    let (ok, major) = self
+                    let (ok, major, minor) = self
                         .loaded
                         .as_ref()
-                        .map(|l| (l.roundtrip_ok, l.info.major))
-                        .unwrap_or((false, 0));
-                    let convertible = |target: ops::Target| ok && target.applicable(major);
+                        .map(|l| (l.roundtrip_ok, l.info.major, l.info.minor))
+                        .unwrap_or((false, 0, 0));
+                    let convertible = |target: ops::Target| ok && target.applicable(major, minor);
                     if ui
                         .add_enabled(
                             convertible(ops::Target::Fl20),
                             egui::Button::new(RichText::new("convert to v20 project").color(ACCENT))
                                 .fill(BTN),
                         )
+                        .on_hover_text(FL20_HINT)
+                        .on_disabled_hover_text(FL20_HINT)
                         .clicked()
                     {
                         self.run_convert(ops::Target::Fl20);
@@ -462,9 +466,9 @@ impl App {
                 if l.info.major <= 10 && l.roundtrip_ok {
                     ui.add_space(12.0);
                     ui.label(RichText::new("nothing to convert").color(OK));
-                } else if l.info.major <= 20 && l.roundtrip_ok {
+                } else if !ops::Target::Fl20.applicable(l.info.major, l.info.minor) && l.roundtrip_ok {
                     ui.add_space(12.0);
-                    ui.label(RichText::new("already v20 or older - only the v10 profile applies").color(OK));
+                    ui.label(RichText::new("already v20.0 or older - only the v10 profile applies").color(OK));
                 }
 
                 if let Some(done) = &self.done {
@@ -479,6 +483,13 @@ impl App {
                     }
                     for w in &done.warnings {
                         ui.label(RichText::new(format!("! {w}")).color(VIOLET).monospace());
+                    }
+                    if done.target == ops::Target::Fl20 {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new("open it in FL 20 and check the mixer and plugins")
+                                .color(TEXT),
+                        );
                     }
                     if done.target == ops::Target::Fl10 {
                         ui.add_space(6.0);

@@ -1,6 +1,6 @@
 # What this is
 
-a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25 projects to 20.8's format. The CLI `easyflp.exe` is the main app. The GUI `easyflp-gui.exe` (eframe/egui) is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
+a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25 projects to 20.0.5's format. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The CLI `easyflp.exe` is the main app. The GUI `easyflp-gui.exe` (eframe/egui) is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
 
 ## Build / run / verify
 
@@ -17,7 +17,9 @@ Cargo lives at `%USERPROFILE%\.cargo\bin`; the .bat scripts add it to PATH.
 - `src/lib.rs` — library crate root; both binaries build on it.
 - `src/flp.rs` — TLV event stream parse/serialize, opcode constants, text decoding.
 - `src/info.rs` — project information extraction for the viewer.
-- `src/convert.rs` — the *20.8* retarget transform. The heart of the app.
+- `src/convert.rs` — the *20.8* retarget transform (`to_fl208`). The heart of the app.
+- `src/convert200.rs` — the *20.8* to *20.0.5* post-pass and the public entry `to_fl200`.
+- `src/wrapper.rs` — Fruity Wrapper state chunk parse/build, shared by both back-end profiles.
 - `src/package.rs` — zip read/write (a `.zip` input carries its non-flp entries through).
 - `src/ops.rs` — shared load / convert / write operations; the single implementation both binaries call.
 - `src/cli.rs` — the `easyflp` binary: `info`, `convert`, `gui` subcommands.
@@ -34,9 +36,11 @@ Cargo lives at `%USERPROFILE%\.cargo\bin`; the .bat scripts add it to PATH.
   files). Extend it only with byte-level evidence from real program saves.
 - Unknown events that survive conversion are warned about, never silently deleted.
 - Wrapper records (`0xD5` sub-records, `0xD4` field B) are plugin-format dependent, not
-  version dependent. The converter must carry them through unchanged. The one exception is
-  the state version at the start of a "Fruity Wrapper" `0xD5`; a native plugin keeps its own
-  state header in those bytes.
+  version dependent. The converter must carry them through unchanged. A "Fruity Wrapper"
+  `0xD5` has three exceptions, all version-dependent host fields: the leading state version,
+  chunk 57, and byte 12 of chunk 2. Every other chunk passes through unchanged. Every native
+  plugin state passes through unchanged; a native plugin keeps its own state header in the
+  leading bytes.
 
 ## Comments — the rule
 

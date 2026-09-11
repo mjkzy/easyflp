@@ -1,5 +1,6 @@
 use crate::convert::{self, Outcome};
 use crate::flp::{self, op, Event, Flp, Payload};
+use crate::wrapper;
 
 pub const FL10_VERSION: &str = "10.0.9";
 
@@ -400,56 +401,22 @@ fn comment_event(text: &str, c: &mut Counts) -> Event {
     blob(COMMENT_FL10, ansiz(&rtf, c))
 }
 
-/* Fruity Wrapper state: u32 version, then (u32 id, u64 size, data) chunks. 10.0.9 writes
-   version 7 and no chunk 56 (vendor name). chunk 2 bytes 12 and 17 are zero in every 10 save
-   and 0xA0 / 1 in every 20+ save of the same plugin. */
+/* 10.0.9 writes wrapper state version 7 and no chunk 56 (vendor name). chunk 2 bytes 12 and 17
+   are zero in every 10 save and 0xA0 / 1 in every 20+ save of the same plugin. */
 fn wrapper_v7(b: &[u8]) -> Option<Vec<u8>> {
-    if b.len() < 4 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(b.len());
-    out.extend_from_slice(&7u32.to_le_bytes());
-    let mut pos = 4usize;
-    while pos + 12 <= b.len() {
-        let id = u32::from_le_bytes(b[pos..pos + 4].try_into().unwrap());
-        let len = u64::from_le_bytes(b[pos + 4..pos + 12].try_into().unwrap()) as usize;
-        if len > b.len() - pos - 12 {
-            return None;
-        }
-        let data = &b[pos + 12..pos + 12 + len];
-        pos += 12 + len;
-        if id == 56 {
+    let (_, chunks) = wrapper::parse_state(b)?;
+    let mut kept: Vec<wrapper::Chunk> = Vec::with_capacity(chunks.len());
+    for mut c in chunks {
+        if c.id == 56 {
             continue;
         }
-        out.extend_from_slice(&id.to_le_bytes());
-        out.extend_from_slice(&(len as u64).to_le_bytes());
-        let start = out.len();
-        out.extend_from_slice(data);
-        if id == 2 && len >= 18 {
-            out[start + 12] = 0;
-            out[start + 17] = 0;
+        if c.id == 2 && c.data.len() >= 18 {
+            c.data[12] = 0;
+            c.data[17] = 0;
         }
+        kept.push(c);
     }
-    if pos != b.len() {
-        return None;
-    }
-    Some(out)
-}
-
-fn chunk_offset(b: &[u8], want: u32) -> Option<(usize, usize)> {
-    let mut pos = 4usize;
-    while pos + 12 <= b.len() {
-        let id = u32::from_le_bytes(b[pos..pos + 4].try_into().unwrap());
-        let len = u64::from_le_bytes(b[pos + 4..pos + 12].try_into().unwrap()) as usize;
-        if len > b.len() - pos - 12 {
-            return None;
-        }
-        if id == want {
-            return Some((pos + 12, len));
-        }
-        pos += 12 + len;
-    }
-    None
+    Some(wrapper::build_state(7, &kept))
 }
 
 /* returns the 10 wrapper state for a legacy effect. the native 20 state is a list of i32
@@ -466,7 +433,7 @@ fn legacy_state(fx: &LegacyEffect, native: &[u8], c: &mut Counts) -> Vec<u8> {
         .map(|w| i32::from_le_bytes(w.try_into().unwrap()))
         .collect();
     let params = if fx.has_version_word { &ints[1.min(ints.len())..] } else { &ints[..] };
-    let Some((off, len)) = chunk_offset(&state, 53) else {
+    let Some((off, len)) = wrapper::chunk_offset(&state, 53) else {
         c.legacy_reset.push(fx.name.to_string());
         return state;
     };
@@ -935,7 +902,7 @@ pub fn to_fl10(src: &Flp) -> Result<Outcome, String> {
         return Err(format!("already v{version}, nothing to convert"));
     }
     let (base, mut notes, mut warnings) = if major > 20 {
-        let o = convert::to_fl20(src)?;
+        let o = convert::to_fl208(src)?;
         (o.flp, o.notes, o.warnings)
     } else {
         (
@@ -1472,11 +1439,11 @@ mod tests {
         chunk(53, &[9; 5], &mut b);
         let v7 = wrapper_v7(&b).unwrap();
         assert_eq!(u32::from_le_bytes(v7[0..4].try_into().unwrap()), 7);
-        assert!(chunk_offset(&v7, 56).is_none());
-        let (off, _) = chunk_offset(&v7, 2).unwrap();
+        assert!(wrapper::chunk_offset(&v7, 56).is_none());
+        let (off, _) = wrapper::chunk_offset(&v7, 2).unwrap();
         assert_eq!(v7[off + 12], 0);
         assert_eq!(v7[off + 17], 0);
-        assert_eq!(chunk_offset(&v7, 53).map(|(o, l)| v7[o..o + l].to_vec()), Some(vec![9; 5]));
+        assert_eq!(wrapper::chunk_offset(&v7, 53).map(|(o, l)| v7[o..o + l].to_vec()), Some(vec![9; 5]));
     }
 
     #[test]
@@ -1488,7 +1455,7 @@ mod tests {
         assert_eq!(state, FRUITY_BALANCE.to_vec());
         let native = [-128i32, 0].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>();
         let state = legacy_state(fx, &native, &mut c);
-        let (off, _) = chunk_offset(&state, 53).unwrap();
+        let (off, _) = wrapper::chunk_offset(&state, 53).unwrap();
         assert_eq!(f32::from_le_bytes(state[off + 17..off + 21].try_into().unwrap()), 0.0);
         assert_eq!(f32::from_le_bytes(state[off + 21..off + 25].try_into().unwrap()), 0.0);
     }
@@ -1502,8 +1469,8 @@ mod tests {
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<_>>();
         let state = legacy_state(fx, &native, &mut c);
-        let (off, _) = chunk_offset(&state, 53).unwrap();
-        let (toff, _) = chunk_offset(&FRUITY_PHASER, 53).unwrap();
+        let (off, _) = wrapper::chunk_offset(&state, 53).unwrap();
+        let (toff, _) = wrapper::chunk_offset(&FRUITY_PHASER, 53).unwrap();
         for i in 0..9 {
             let a = f32::from_le_bytes(state[off + 17 + 4 * i..off + 21 + 4 * i].try_into().unwrap());
             let b = f32::from_le_bytes(

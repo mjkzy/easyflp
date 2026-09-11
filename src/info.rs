@@ -24,6 +24,7 @@ pub struct EffectInfo {
 pub struct ProjectInfo {
     pub version: String,
     pub major: u32,
+    pub minor: u32,
     pub build: Option<u32>,
     pub title: String,
     pub tempo: f64,
@@ -124,6 +125,7 @@ pub fn extract(flp: &Flp) -> ProjectInfo {
     let mut info = ProjectInfo {
         version: flp.version().unwrap_or_else(|| "unknown".into()),
         major: flp.version_major().unwrap_or(0),
+        minor: flp.version_minor().unwrap_or(0),
         build: None,
         title: String::new(),
         tempo: 0.0,

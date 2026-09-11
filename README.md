@@ -1,6 +1,6 @@
 # easyFLP
 
-a `.flp` viewer & backport utility for 🥭 version `20.8` *(2020)*
+a `.flp` viewer & backport utility for 🥭 version `20.0.5` *(2018)*
 
 this is a **work in progress** project, and may have bugs.
 
@@ -28,7 +28,7 @@ the app is cli, but also bundles a basic GUI .exe for people to use too. usage:
 
 ```
 easyflp info <file.flp|file.zip>       print project information
-easyflp convert <file.flp|file.zip>    write <name>_easy (v20.8) next to the input
+easyflp convert <file.flp|file.zip>    write <name>_easy (v20.0.5) next to the input
 easyflp convert --fl10 <file>          write <name>_easy10 (v10.0.9) — experimental
 easyflp gui [file]                     launch the graphical viewer
 ```
@@ -39,12 +39,13 @@ easyflp gui [file]                     launch the graphical viewer
 
 ## how it works
 
-the converter rewrites the event stream to the byte-verified *20.8* profile. it does not touch note data, plugin states, or sample references. see [FORMAT.md](FORMAT.md) for the full transform table and its research.
+the converter rewrites the event stream to the byte-verified *20.0.5* profile. it runs in two stages: the *20.8* transform first, then the *20.8* to *20.0.5* post-pass. it does not touch note data, plugin states, or sample references. see [FORMAT.md](FORMAT.md) for the full transform tables and their research.
 
 tldr:
-- rewrites the version to `20.8.4.2576` specifically
-- convert *25* channel routing (`0x68`) to the *20.8* form (`0x16`)
-- rewrites playlist clip records to the *20.8* layout
+- rewrites the version to `20.0.5.681` specifically
+- convert *25* channel routing (`0x68`) to the *20* form (`0x16`)
+- rewrites playlist clip records to the *20* layout
+- truncates lane and channel records to the *20.0.5* lengths and drops the wrapper host chunk
 
 the v10 profile runs the *20.8* transform first, then rewrites the stream into the *10.0.9* layout: ANSI strings, the 105-strip mixer with its four send buses, 32-byte clips on lanes `99 - track`, 8 effect slots, and FL 10's wrapper/native plugin state versions. the legacy fruity effects (blood overdrive, reeverb, phaser, chorus, balance) are re-wrapped as the VST DLLs FL 10 ships. see [FORMAT.md](FORMAT.md) for the table.
 

@@ -1,8 +1,8 @@
 # FLP conversion knowledge
 
-Plugin wrapper records (`0xD5` records 30/32/50/51/52/57, and `0xD4` field B) are byte-identical across versions. They depend on the plugin format, not the program version. The converter carries them through unchanged.
+Plugin wrapper records (`0xD5` records 30/32/50/51/52, and `0xD4` field B) depend on the plugin format, not the program version. The converter carries them through unchanged.
 
-One record is version dependent: the `0xD5` state of the VST host plugin "Fruity Wrapper". Its first `u32` is a state version, 12 in *25* and 10 in *20.8*. Every `0xD5` belongs to the plugin that the preceding `0xC9` internal name gives. The converter rewrites the first `u32` only for a "Fruity Wrapper" record.
+The "Fruity Wrapper" `0xD5` state holds three version-dependent host fields: the leading state version, chunk 57, and byte 12 of chunk 2. *20.0.5* writes no chunk 57, and writes chunk 2 byte 12 as 0. Its first `u32` is a state version. The ladder is 7 in *10.0.9*, 8 in *20.0.5*, 10 in *20.8*, and 12 in *25*. The state layout is the version `u32`, then repeated `(u32 chunk id, u64 length, payload)`. The length field is 64-bit. Every `0xD5` belongs to the plugin that the preceding `0xC9` internal name gives. The converter rewrites the first `u32` only for a "Fruity Wrapper" record.
 
 A native plugin keeps its own state header in the same four bytes. The observed first `u32` values are plugin data, not a version: Fruity Love Philter 786435, Maximus 983043, Gross Beat 524291, Edison 851971, Fruity Fast Dist 171, Fruity Delay Bank 16, Fruity Parametric EQ 2 with 8, Fruity Limiter 7, Soundgoodizer 3, Fruity Compressor 2, Fruity Mute 2 with 1, Fruity Delay 2 with 0. Fruity Soft Clipper writes an 8-byte record of two parameters, 90 and 127. A clamp of these values corrupts the plugin state and the *20.8* loader stops.
 
@@ -16,6 +16,8 @@ A native plugin keeps its own state header in the same four bytes. The observed 
 Event encoding by opcode range: `0x00-0x3F` u8, `0x40-0x7F` u16le, `0x80-0xBF` u32le, `0xC0-0xFF` LEB128 varint length + blob. One violation: *25*'s `0xAC` sits in the u32 range but carries a fixed 3-byte payload.
 
 ## The transform, any newer version to 20.8
+
+This table is the intermediate stage. The tool writes the *20.0.5* layout, and the *20.0.5* post-pass and the *10.0.9* profile both start from the output of this stage.
 
 | structure | newer form | 20.8 form | action |
 |---|---|---|---|
@@ -95,6 +97,41 @@ A time marker is a `0x94` position, then `0x21` numerator, `0x22` denominator, a
 
 The rules follow from that evidence. Delete `0x2D`, `0x2E`, `0x65`, and `0xA8` everywhere. Drop the whole marker run inside a pattern block. Keep arrangement markers. A dropped run that is not the default 4/4 loses a pattern time signature, so the converter warns.
 
+## The transform, 20.8 to 20.0.5
+
+The tool writes this layout. The rules come from one truth set: a project saved by *20.0.5.681*, the same project re-saved by *21.2.3.4004*, and the same project re-saved by *25.2.4.5242*. Each rule is verified byte for byte against the *20.0.5* save.
+
+| structure | 20.8 stage form | 20.0.5 form | action |
+|---|---|---|---|
+| `0xC7` version | `"20.8.4.2576"` | `"20.0.5.681"` | rewrite (11-byte NUL-terminated ASCII) |
+| `0x9F` build | 2576 | 681 | rewrite |
+| `0x1C` | 1 | 3 | rewrite |
+| `0xC8` registration | 50 bytes | 12 bytes `3c 00 37 00 38 00 31 00 44 00 00 00` | replace |
+| `0x26 0x27 0x28` | present, values 1, 0, 0 | absent | delete |
+| `0xD7` channel blob | 158 bytes | 157 bytes | truncate |
+| `0xEE` lane records | 66 bytes x 500, index 1..500 | 62 bytes | truncate each record; keep all 500 |
+| `0xEE` default lane colour, bytes 4..6 | `34 38 3a` | `48 51 56` | rewrite only on an exact match |
+| `0x80` default channel colour | `0x474541` | `0x6A655C` | rewrite only on an exact match |
+| `0xE9` clip records | 32 bytes, lane = 500 - track | identical | pass through |
+| `0xE1`, `0xEA`, `0xEB`, `0xEC`, `0xE0`, `0xE2`, `0xE3`, `0xE4`, `0xE5`, `0xE7`, `0xCC`, `0xD1`, `0xD4`, `0xD8`, `0xDA`, `0xDB`, `0xDD`, `0xED`, `0xF1` | any | identical | pass through |
+| "Fruity Wrapper" `0xD5` | state version 10 | 8 | rewrite the first u32 |
+| Fruity Wrapper chunk 57 | 4-byte payload `60 09 00 00` on VST2 hosts | absent | delete the chunk |
+| Fruity Wrapper chunk 2, payload byte 12 | `A0` (*20.8*), `A4` (*21*, *25*) | `00` | set to 0; byte 17 stays 1 |
+| Fruity Wrapper chunk 53 and every other chunk | any | any | pass through; never resize |
+| Fruity Limiter `0xD5` | version 7, 169 bytes | version 6, 168 bytes | rewrite the version, drop the last byte |
+| Fruity Delay 2 / Delay 3 / Fruity Parametric EQ `0xD5` | 32 / 108 / 116 bytes | identical | pass through |
+| other native plugin `0xD5` | any | unknown | pass through byte-exact and warn |
+
+The deleted set is `0x26 0x27 0x28`. The *20.8* stage already removes `0x29 0x2A 0x2B 0x2C 0x2F 0xA5 0xA6 0xA7 0xF2 0xF3`.
+
+The `0xD7` tail that the truncation drops is constant: zeros, then the f64 0.5 at offset 160 of the 168-byte *21* form. The `0xEE` tail that the truncation drops is four zero bytes.
+
+A source already at major 20 (a *20.8* save) skips the 20.8 stage and takes the post-pass only, because a genuine *20.8* save holds none of the post-*20.8* events. *20.9* saves are untested.
+
+*20.0.5* wrote only 33 lane records, indexes 1..33. That count is a property of the session, not of the format, and it is not derivable from the project. *21* accepted the 33-record file, and *20.0.5* accepts the 500 records the converter writes.
+
+Fruity Parametric EQ 2 keeps its state unchanged. Its *20.0*-era state size is unverified, and a changed state made the plugin stop for users of the 10 profile. Every unverified native state is listed in one warning.
+
 ## The transform, 20.8 to 10.0.9 (experimental profile)
 
 The FL 10 profile runs the 20.8 transform first, then rewrites the 20.8 stream into the 10.0.9 layout. Every rule below comes from one truth pair: a project saved by *10.0.9* and the same project opened and saved by *21.2.3*. The converter output for that pair matches the *10.0.9* save event for event. The remaining differences are theme colours, window rectangles, run-time pointer bytes, and the VST plugins' own state chunks.
@@ -115,7 +152,7 @@ The FL 10 profile runs the 20.8 transform first, then rewrites the 20.8 stream i
 | `0xD7` stretch mode (offset 108) | 6 = Pro default, 0 = none | 1, 0 | map 6→1, 0→0; other modes become 1 with a warning |
 | pattern block | `41 [C1] 96 9D 9E A4` | `41 [C1] 96 97` | drop `9D 9E A4`; add `97` = 0 |
 | `0xE9` clip records | 32 bytes, lane = 500 − track | 32 bytes, lane = 99 − track | lane − 401; lanes below 0 (track > 99) clamp to 0 |
-| `0xEE` lane records | 66 bytes, index 0..499 | 22 bytes, index 1..99 | truncate; drop index 0 and above 99 |
+| `0xEE` lane records | 66 bytes, index 1..500 | 22 bytes, index 1..99 | truncate; keep index 1..99 and drop the rest |
 | `0xEF` lane name, `0x63 0xF1 0x24 0x64 0x27 0x28 0x1F 0x26` | present | absent | delete |
 | insert block | `[95] [2A] [CC] EC(12) (C9 D4 [CB] 9B 80 D5 62 or 62)×10 EB(127) 9A 93` | `[95] [CC] 1B(12) EC(5) (C9 D4 [CB] D5)* EB(105) 9A 93` | rebuild; slots 9 and 10 are dropped with a warning |
 | `0xEC` insert flags | 12 bytes, flags at offset 4 | `00 00 00 00 01` | replace; a disabled insert (flag 0x08 clear) loads enabled |
@@ -167,4 +204,4 @@ The program's loaders select nothing from the claimed `0xC7` version. *24* rejec
 ## Safety gates
 
 - The parser must reproduce the input byte-exact (`serialize(parse(x)) == x`) before the convert button enables. This proves no event was misread.
-- Events that survive conversion but are outside the known *20.8* opcode set are reported as warnings, never deleted silently. The 10 profile applies the same gate against the *10.0.9* opcode set.
+- Events that survive conversion but are outside the known *20.8* opcode set are reported as warnings, never deleted silently. The *20.0.5* gate is the same set minus `0x26 0x27 0x28`. The 10 profile applies the same gate against the *10.0.9* opcode set.

@@ -166,6 +166,10 @@ impl Flp {
     pub fn version_major(&self) -> Option<u32> {
         self.version()?.split('.').next()?.parse().ok()
     }
+
+    pub fn version_minor(&self) -> Option<u32> {
+        self.version()?.split('.').nth(1)?.parse().ok()
+    }
 }
 
 pub fn asciiz(blob: &[u8]) -> String {

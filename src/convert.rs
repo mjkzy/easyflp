@@ -31,7 +31,7 @@ const POST_FL20_OPS: [u8; 27] = [
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
    (0x5F insert icon, 0x87 sampler root note, 0x95/0xCC insert colour+name, 0xC1 pattern name,
    0xEF lane name, 0xD0 legacy notes). leftovers outside this set are reported, never deleted. */
-const FL20_KNOWN_OPS: [u8; 104] = [
+pub const FL20_KNOWN_OPS: [u8; 104] = [
     0x00, 0x09, 0x0A, 0x0B, 0x11, 0x12, 0x14, 0x15, 0x16, 0x17, 0x1C, 0x1D, 0x1E, 0x1F, 0x20,
     0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x40, 0x41, 0x43, 0x45, 0x46, 0x47, 0x4A,
     0x4B, 0x4C, 0x50, 0x53, 0x55, 0x56, 0x59, 0x5F, 0x61, 0x62, 0x63, 0x64, 0x80, 0x83, 0x84,
@@ -792,7 +792,7 @@ fn fade_clip_record(g: &FadeGroup, src_rec: &[u8]) -> [u8; 32] {
     r
 }
 
-pub fn to_fl20(src: &Flp) -> Result<Outcome, String> {
+pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     let version = src.version().ok_or("file has no version event (0xC7)")?;
     let major = src
         .version_major()
@@ -1318,7 +1318,7 @@ mod tests {
     }
 
     fn converted_playlist(flp: &Flp) -> (Vec<u8>, Outcome) {
-        let outcome = to_fl20(flp).unwrap();
+        let outcome = to_fl208(flp).unwrap();
         let blob = outcome
             .flp
             .events
@@ -1376,7 +1376,7 @@ mod tests {
     #[test]
     fn converts_v25_fade_in_and_stretch_scale() {
         let source = v25_clip(192, 500.0, 250.0, 0.5);
-        let outcome = to_fl20(&source_flp(source.clone())).unwrap();
+        let outcome = to_fl208(&source_flp(source.clone())).unwrap();
         let playlist = outcome
             .flp
             .events
@@ -1553,7 +1553,7 @@ mod tests {
 
         let mut source = source_flp(playlist);
         source.events.push(Event { op: 0xD8, payload: Payload::Blob(d8) });
-        let outcome = to_fl20(&source).unwrap();
+        let outcome = to_fl208(&source).unwrap();
         let blob = outcome
             .flp
             .events
@@ -1588,7 +1588,7 @@ mod tests {
     }
 
     fn converted_wrapper(plugin: &str, marker: u32) -> (Vec<u8>, Outcome) {
-        let outcome = to_fl20(&wrapper_flp(plugin, marker)).unwrap();
+        let outcome = to_fl208(&wrapper_flp(plugin, marker)).unwrap();
         let blob = outcome
             .flp
             .events
@@ -1659,7 +1659,7 @@ mod tests {
     }
 
     fn converted_ops(flp: &Flp) -> (Vec<u8>, Outcome) {
-        let outcome = to_fl20(flp).unwrap();
+        let outcome = to_fl208(flp).unwrap();
         let ops = outcome.flp.events.iter().map(|event| event.op).collect();
         (ops, outcome)
     }
