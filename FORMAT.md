@@ -201,6 +201,14 @@ Unknown plugins keep their state unchanged and are reported.
 - Stretch modes other than 0 and 6.
 - *10* omitted three of the 99 lane records for a reason not understood; *21* filled them with byte 12 = 1. The converter writes all 99.
 
+## Cut groups (`0x84`)
+
+`0x84` is a u32 in the channel block: the cut group in the low u16, the cut-by group in the high u16. "Cut itself" is a group of the channel's own, with both words equal and nonzero. The program numbers the groups by creation order and never shares one. Every plugin generator receives the next free group on creation (`0x10001`, `0x20002`, `0x30003`, `0x40004` across four generators in one *24* save). A sampler receives the next free group when the user ticks the box, and stays at 0 otherwise. The layout is the same in *10*, *20.0.5*, *21*, *24*, *25*, and *26*. The converter passes the event through unchanged. A writer that puts one number on several channels makes them choke each other.
+
+## Lane count by version
+
+The `0xE9` lane field is `laneCount - 1 - lane`. The lane count is 500 from *20*, 199 in *12* to *19*, and 99 in *10*. The count of `0xEE` records is not the lane count: *20.0.5* wrote 199 of its 500 lanes in one save and 33 in another, and *10* writes none. *10* has no `0x63` arrangement event; its `0xE9` sits in the header.
+
 ## Version and structure are independent
 
 The program's loaders select nothing from the claimed `0xC7` version. *24* rejects 66-byte lane records in a file that claims *21*, and accepts 70-byte lanes in the same file. A converter must rewrite structures, not headers.
