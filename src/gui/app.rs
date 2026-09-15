@@ -206,7 +206,7 @@ impl App {
                                 .unwrap_or_default();
                             ui.add_space(14.0);
                             ui.label(
-                                RichText::new(format!("{name}  |  v{}", l.info.version))
+                                RichText::new(name)
                                     .color(DIM)
                                     .monospace(),
                             );
