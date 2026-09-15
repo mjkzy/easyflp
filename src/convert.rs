@@ -922,6 +922,9 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
         }
         match ev.op {
             o if POST_FL20_OPS.contains(&o) => deleted += 1,
+            /* 26 writes a second 0xAC in the project header, followed by a 0x00 (channel enabled)
+               event that precedes every channel. 20.8 writes 0x00 inside channel blocks only. */
+            0x00 if chan_idx == 0 => deleted += 1,
             op::CHANNEL_NEW => {
                 chan_idx += 1;
                 current_channel = ev.value().map(|value| value as usize);

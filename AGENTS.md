@@ -1,6 +1,6 @@
 # What this is
 
-a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25 projects to 20.0.5's format. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The CLI `easyflp.exe` is the main app. The GUI `easyflp-gui.exe` (eframe/egui) is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
+a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25/26 projects to 20.0.5's format. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The CLI `easyflp.exe` is the main app. The GUI `easyflp-gui.exe` (eframe/egui) is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
 
 ## Build / run / verify
 

@@ -29,7 +29,7 @@ This table is the intermediate stage. The tool writes the *20.0.5* layout, and t
 | `0xD5` wrapper marker, "Fruity Wrapper" only | 12 | 10 | rewrite first u32; other plugins pass through |
 | `0xD7` channel blob | 168 bytes | 158 bytes | truncate (leading bytes agree) |
 | `0xD7` stretch time (offset 96) | f32, 1/768 bar (*24.2*+) | u32, 1/768 bar | reinterpret f32 -> u32, same unit (see below) |
-| `0xE9` clip records | 60 B (*21-24*) / 80 B (*25*) | 32 B | keep positions, lengths, and trims; reconcile end trims; move scale to `0xD7`; emulate fades |
+| `0xE9` clip records | 60 B (*21-24*) / 80 B (*25*) / 88 B (*26*) | 32 B | keep positions, lengths, and trims; reconcile end trims; move scale to `0xD7`; emulate fades |
 | `0xEE` lane records | 70 bytes × 500 | 66 bytes × 500 | truncate each |
 | `0xEB` route table | 1 byte (*25*) | 127 bytes | pad with zeros |
 | `0xE1` param targets | base `0x7000` (*25*) | base `0x2000` | rebase, stride `0x40` |
@@ -44,6 +44,10 @@ The deleted event set is the opcode difference between the two truth files, plus
 *25* addresses the mixer "current strip" as strip 501 (`0xE1` target `0xED40`). *20.8* addresses it as strip 126. The rebase clamps strip indexes above 126 to 126.
 
 The canonical `0xE1` table is a header record, then per strip 0..126: ten slot pairs (pid 0 enabled, pid 1 mix), volume 192, pan 193, stereo separation 194, EQ 208-210 / 216-218 / 224-226, then a tail that shortens on high strips: sends 164-168 through strip 99, 168 only through 104, and 190 on every strip. Source values are kept where present. The program's defaults fill the rest.
+
+## The 26 layout
+
+One truth pair: a project saved by *25.2.4.5242* and the same project saved by *26.1.5.5618*. The event streams are identical except for four things. The `0xE9` clip record grows from 80 to 88 bytes: the first 72 bytes keep the *25* layout, the new bytes at 72..80 are `00 00 00 00 FF FF FF FF` on every clip, and the last 8 bytes are the zero tail of the *25* record. The header holds a second `0xAC` (`00 01 00`) after `0xC3`, followed by a `0x00` u8 event with value 0. `0xA9` is 15 instead of 7. `0xF2` byte 11 is `0x40` instead of 0. Every `0xD5` state, `0xD7` blob, `0xEE` lane record, `0xEB` table, and `0xE1` record is byte-identical to the *25* save, so the 20.8 transform applies unchanged beyond the clip size and the header `0x00`. The converter output for the *26* save matches the output for the *25* save except the `0xED` run-time bytes.
 
 ## 0xD7 sampler stretch time
 

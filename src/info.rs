@@ -58,7 +58,9 @@ pub fn kind_name(kind: u8) -> &'static str {
 }
 
 pub fn clip_record_size(major: u32, playlist_len: usize) -> Option<usize> {
-    let claimed: usize = if major >= 25 {
+    let claimed: usize = if major >= 26 {
+        88
+    } else if major >= 25 {
         80
     } else if major >= 21 {
         60
@@ -68,7 +70,7 @@ pub fn clip_record_size(major: u32, playlist_len: usize) -> Option<usize> {
     if playlist_len == 0 || playlist_len % claimed == 0 {
         return Some(claimed);
     }
-    [80usize, 60, 32].iter().copied().find(|s| playlist_len % s == 0)
+    [88usize, 80, 60, 32].iter().copied().find(|s| playlist_len % s == 0)
 }
 
 fn wrapper_name(blob: &[u8]) -> Option<String> {
