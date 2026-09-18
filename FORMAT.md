@@ -35,6 +35,7 @@ This table is the intermediate stage. The tool writes the *20.0.5* layout, and t
 | `0xE1` param targets | base `0x7000` (*25*) | base `0x2000` | rebase, stride `0x40` |
 | `0xE3` link destination (offset 10) | base `0x7000` (*25*) | base `0x2000` | rebase, stride `0x40` |
 | `0xE1` table shape | tail records dropped | 4697 records | rebuild canonical table |
+| `0xE1` in a mixer preset (`FLhd` format `0x40`) | one strip, 32 records | one strip, 32 records | rebase and rebuild that strip only (see below) |
 | `0x85` selected insert | out-of-range values occur | ≤ 126 | clamp to 126 |
 | pattern time marker | `0x94` run inside the pattern block | absent | delete the run (see below) |
 | stream tail | `0xE1 0x85 0xF3 0x2F` | `0xE1 0x85` | `0xF3`/`0x2F` are in the delete set |
@@ -42,6 +43,8 @@ This table is the intermediate stage. The tool writes the *20.0.5* layout, and t
 The deleted event set is the opcode difference between the two truth files, plus `0xAC`, minus `0xD8`, plus the four marker sub-records and the *25.2* additions: `0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x34 0x65 0x67 0xA5 0xA6 0xA7 0xA8 0xA9 0xAA 0xAB 0xAC 0xC0 0xF2 0xF3 0xFC 0xFD`. Two genuine *20.8* saves proved that *20.8* writes `0xD8` (see below). `0xC0` carries the project's "FL Studio" name string; `0x34`, `0xAB`, `0xFC`, `0xFD` are per-pattern metadata, all zero in the observed *25.2.4* save.
 
 *25* addresses the mixer "current strip" as strip 501 (`0xE1` target `0xED40`). *20.8* addresses it as strip 126. The rebase clamps strip indexes above 126 to 126.
+
+A `.fst` preset is the same TLV stream with a different `FLhd` format field: `0x20` channel preset, `0x30` plugin preset, `0x40` mixer preset. A mixer preset stores the one strip it was saved from: the ten slot pairs and the 12-pid run (`192..226`), 32 records, no `0x4000` header record and no send tail. Every version from *12* to *26* writes this shape (*10* and *11* write 28 records: eight slot pairs). The strip index is whatever insert the preset was saved from; the program ignores it on load. A mixer preset rebuilt as the full 4697-record project table loads with strip 0's stock values (volume 100%), so the preset path rebuilds only the strips present in the source.
 
 The canonical `0xE1` table is a header record, then per strip 0..126: ten slot pairs (pid 0 enabled, pid 1 mix), volume 192, pan 193, stereo separation 194, EQ 208-210 / 216-218 / 224-226, then a tail that shortens on high strips: sends 164-168 through strip 99, 168 only through 104, and 190 on every strip. Source values are kept where present. The program's defaults fill the rest.
 
@@ -134,7 +137,11 @@ A source already at major 20 (a *20.8* save) skips the 20.8 stage and takes the 
 
 *20.0.5* wrote only 33 lane records, indexes 1..33. That count is a property of the session, not of the format, and it is not derivable from the project. *21* accepted the 33-record file, and *20.0.5* accepts the 500 records the converter writes.
 
-Fruity Parametric EQ 2 keeps its state unchanged. Its *20.0*-era state size is unverified, and a changed state made the plugin stop for users of the 10 profile. Every unverified native state is listed in one warning.
+Fruity Parametric EQ 2: *20.0.5* hangs at playback on a version 7 or 8 state (354 bytes). A *20.0.5* save of a converted plugin writes version 3 at 309 bytes: the first 305 bytes of the newer state, then a zero `u32` where the newer state holds 1. The converter writes that form. Every unverified native state is listed in one warning.
+
+Gross Beat leads with `u16 3` and a `u16` state version: 8 in *20.0.5*, 9 in *26*. *20.0.5* resets a version 9 state to its default (6961 bytes). The 9 body is the 8 body plus one trailing byte: a *10.0.9* save of a version 9 state (loaded correctly there) is the same body without that byte, and the *20.0.5* default state ends where the 8 body ends. The converter rewrites 9 to 8 and drops the byte. One truth pair; the warning asks for a check.
+
+Fruity Convolver: *26* writes version 15 (576 bytes) and *20.0.5* loads it unchanged (a *20.0.5* save returns the same bytes). *10.0.9* writes version 14 (525 bytes) and reads the 15 body; its differences in a save are the impulse path and the fields derived from the impulse. The impulse path is a length-prefixed string at offset 21. *26* writes stock impulses under `%FLStudioFactoryData%\Data\`, a macro *10* does not know, so *10* falls back to `Default.wav`.
 
 ## The transform, 20.8 to 10.0.9 (experimental profile)
 
@@ -167,6 +174,8 @@ The FL 10 profile runs the 20.8 transform first, then rewrites the 20.8 stream i
 | "Fruity Wrapper" `0xD5` | state version 10, chunk 56 present, chunk 2 bytes 12/17 = `A0`/`01` | version 7, no chunk 56, bytes 12/17 = 0 | rewrite |
 | Fruity Limiter `0xD5` | version 7, 169 bytes | version 6, 168 bytes | rewrite the version, truncate |
 | Fruity Parametric EQ 2 `0xD5` | version 7 or 8, 354 bytes | version 2, 305 bytes | rewrite the version, truncate |
+| Gross Beat `0xD5` | `u16 3, u16 9`, trailing byte | `u32 8`, no trailing byte | rewrite the head, drop the byte (matches a *10* save byte for byte except float rounding) |
+| Fruity Convolver `0xD5` | impulse under `%FLStudioFactoryData%\Data\` | absolute path | point at the file of the newest `Image-Line\FL Studio *` install on this machine that has it; else `%FLStudioData%\` and a warning |
 | Fruity Reeverb 2 `0xD5` | `0x2711`, 66 bytes | `0x2710`, 58 bytes | rewrite the version; remove the 8 bytes inserted at offset 56 |
 | Fruity Delay 2, Fruity Soft Clipper | 32 / 8 bytes | identical | pass through |
 | Fruity Blood Overdrive, Reeverb, Phaser, Chorus, Balance | native `C9 "<name>"` + int-parameter `0xD5` | `C9 "Fruity Wrapper"` + `CB "<name>"` + wrapper `0xD5` around a VST DLL | replace with the *10* wrapper template; map parameters (see below) |

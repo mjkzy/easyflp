@@ -278,7 +278,7 @@ impl App {
             .on_hover_cursor(egui::CursorIcon::PointingHand);
         if click.clicked() {
             if let Some(p) = rfd::FileDialog::new()
-                .add_filter("project", &["flp", "zip"])
+                .add_filter("project or preset", &["flp", "fst", "zip"])
                 .pick_file()
             {
                 self.open_path(&p);
@@ -295,14 +295,14 @@ impl App {
         ui.painter().text(
             c - egui::vec2(0.0, 18.0),
             Align2::CENTER_CENTER,
-            "drop a .flp or .zip file here",
+            "drop a .flp, .fst, or project .zip here",
             FontId::monospace(24.0),
             WHITE,
         );
         ui.painter().text(
             c + egui::vec2(0.0, 16.0),
             Align2::CENTER_CENTER,
-            "or click to open file explorer",
+            "or click to use file explorer",
             FontId::monospace(14.0),
             mix(DIM, TEXT, t),
         );
@@ -333,6 +333,9 @@ impl App {
                         ui.end_row();
                     };
                     row("file", format!("{} ({} KB)", l.path.display(), l.file_size / 1024));
+                    if !l.flp.is_project() {
+                        row("kind", l.flp.kind_name().into());
+                    }
                     if let Some(entry) = &l.zip_entry {
                         row("zip entry", entry.clone());
                     }

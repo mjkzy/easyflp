@@ -163,12 +163,20 @@ const LIMITER_LEN_FL200: usize = 168;
    plugin state is carried through unchanged and reported. */
 const NATIVE_UNCHANGED: [&str; 3] = ["Fruity Delay 2", "Fruity Delay 3", "Fruity Parametric EQ"];
 
-/* 20.0.5 hangs at playback on a Parametric EQ 2 state of version 7 or 8 (354 bytes). no 20.0.5
-   save of the plugin is available. the 10.0.9 form (version 2, 305 bytes, verified in the 10
-   profile) is the oldest form 20.0.5 loads. */
+/* 20.0.5 hangs at playback on a Parametric EQ 2 state of version 7 or 8 (354 bytes). a 20.0.5
+   save of a converted plugin writes version 3 at 309 bytes: the first 305 bytes of the newer
+   state, then a zero u32 (the newer state carries 1 there; 20.0.5 wrote 0 back). */
 const EQ2_STATES_NEWER: [u32; 2] = [7, 8];
-const EQ2_STATE_FL10: u32 = 2;
-const EQ2_LEN_FL10: usize = 305;
+const EQ2_STATE_FL200: u32 = 3;
+const EQ2_LEN_FL200: usize = 309;
+const EQ2_LEN_SHARED: usize = 305;
+
+/* Gross Beat leads with u16 3 and a u16 state version: 8 in 20.0.5, 9 in 26. the 9 body is the
+   8 body plus one trailing byte (a 10 save of the 9 state drops exactly that byte, and the
+   20.0.5 default state ends where the 8 body ends). 20.0.5 resets a version 9 state to default. */
+const GROSS_BEAT_TAG: u16 = 3;
+const GROSS_BEAT_STATE_FL200: u16 = 8;
+const GROSS_BEAT_STATE_NEWER: u16 = 9;
 
 struct Counts {
     deleted: usize,
@@ -178,6 +186,7 @@ struct Counts {
     option_flags: usize,
     limiters: usize,
     eq2: usize,
+    gross_beats: usize,
     lanes: usize,
     lane_src_len: usize,
     lanes_dropped: usize,
@@ -231,12 +240,24 @@ fn native_state_fl200(name: &str, b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
     }
     let marker = u32::from_le_bytes(b[0..4].try_into().unwrap());
     if name == "Fruity Parametric EQ 2" {
-        if !EQ2_STATES_NEWER.contains(&marker) || b.len() < EQ2_LEN_FL10 {
+        if !EQ2_STATES_NEWER.contains(&marker) || b.len() < EQ2_LEN_SHARED {
             return None;
         }
-        let mut nb = b[..EQ2_LEN_FL10].to_vec();
-        nb[0..4].copy_from_slice(&EQ2_STATE_FL10.to_le_bytes());
+        let mut nb = b[..EQ2_LEN_SHARED].to_vec();
+        nb.resize(EQ2_LEN_FL200, 0);
+        nb[0..4].copy_from_slice(&EQ2_STATE_FL200.to_le_bytes());
         c.eq2 += 1;
+        return Some(nb);
+    }
+    if name == "Gross Beat" {
+        let tag = u16::from_le_bytes([b[0], b[1]]);
+        let version = u16::from_le_bytes([b[2], b[3]]);
+        if tag != GROSS_BEAT_TAG || version != GROSS_BEAT_STATE_NEWER || b.len() < 5 {
+            return None;
+        }
+        let mut nb = b[..b.len() - 1].to_vec();
+        nb[2..4].copy_from_slice(&GROSS_BEAT_STATE_FL200.to_le_bytes());
+        c.gross_beats += 1;
         return Some(nb);
     }
     if name != "Fruity Limiter" || marker != LIMITER_STATE_FL208 || b.len() < LIMITER_LEN_FL200 {
@@ -269,6 +290,7 @@ pub fn fl208_to_fl200(
         option_flags: 0,
         limiters: 0,
         eq2: 0,
+        gross_beats: 0,
         lanes: 0,
         lane_src_len: 0,
         lanes_dropped: 0,
@@ -457,12 +479,20 @@ pub fn fl208_to_fl200(
     }
     if c.eq2 > 0 {
         notes.push(format!(
-            "Fruity Parametric EQ 2 state {} -> {EQ2_STATE_FL10} ({EQ2_LEN_FL10} bytes, the 10.0.9 form) on {} plugin{}",
+            "Fruity Parametric EQ 2 state {} -> {EQ2_STATE_FL200} ({EQ2_LEN_FL200} bytes) on {} plugin{}",
             "7/8", c.eq2, plural(c.eq2)
         ));
+    }
+    if c.gross_beats > 0 {
+        notes.push(format!(
+            "Gross Beat state {GROSS_BEAT_STATE_NEWER} -> {GROSS_BEAT_STATE_FL200} (trailing byte dropped) on {} plugin{}",
+            c.gross_beats,
+            plural(c.gross_beats)
+        ));
         warnings.push(format!(
-            "{} Fruity Parametric EQ 2 state{} written in the 10.0.9 form; a 20.0.5 save of the plugin is needed to verify the settings survive",
-            c.eq2, plural(c.eq2)
+            "{} Gross Beat state{} rewritten from a 10.0.9 save of the same state; check the slots in 20.0.5",
+            c.gross_beats,
+            plural(c.gross_beats)
         ));
     }
     if c.lane_colours > 0 {
@@ -575,6 +605,7 @@ mod tests {
             option_flags: 0,
             limiters: 0,
             eq2: 0,
+            gross_beats: 0,
             lanes: 0,
             lane_src_len: 0,
             lanes_dropped: 0,

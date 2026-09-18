@@ -53,6 +53,70 @@ const FL10_STRIPS: u16 = 105;
 const FL10_CURRENT_STRIP: u16 = 104;
 const FL20_CURRENT_STRIP: u16 = 126;
 const FL10_SLOTS: usize = 8;
+
+/* the Plugins\Fruity\Effects folder of a 10.0.9 install. an effect outside the list and outside
+   LEGACY_EFFECTS loads as an empty slot in 10. */
+const FL10_EFFECTS: [&str; 44] = [
+    "Buzz Effect Adapter",
+    "EQUO",
+    "Edison",
+    "Fruity Big Clock",
+    "Fruity Convolver",
+    "Fruity Delay 2",
+    "Fruity Delay Bank",
+    "Fruity Fast Dist",
+    "Fruity Flangus",
+    "Fruity Formula Controller",
+    "Fruity HTML NoteBook",
+    "Fruity LSD",
+    "Fruity Limiter",
+    "Fruity Love Philter",
+    "Fruity Multiband Compressor",
+    "Fruity NoteBook",
+    "Fruity PanOMatic",
+    "Fruity Parametric EQ",
+    "Fruity Parametric EQ 2",
+    "Fruity Peak Controller",
+    "Fruity Reeverb 2",
+    "Fruity Scratcher",
+    "Fruity Send",
+    "Fruity Soft Clipper",
+    "Fruity Spectroman",
+    "Fruity Squeeze",
+    "Fruity Stereo Enhancer",
+    "Fruity Stereo Shaper",
+    "Fruity Vocoder",
+    "Fruity WaveShaper",
+    "Fruity Wrapper",
+    "Fruity X-Y Controller",
+    "Fruity dB Meter",
+    "Gross Beat",
+    "Hardcore",
+    "Maximus",
+    "Newtone",
+    "Patcher",
+    "Pitcher",
+    "Soundgoodizer",
+    "SynthMaker",
+    "Vocodex",
+    "Wave Candy",
+    "ZGameEditor Visualizer",
+];
+
+/* Gross Beat in 10 leads with a u32 state version 8; 26 leads with u16 3, u16 9 and one extra
+   trailing byte. a 10 save of the converted state is the 26 body with that byte removed. */
+const GROSS_BEAT_STATE_FL10: u32 = 8;
+const GROSS_BEAT_HEAD_NEWER: [u8; 4] = [3, 0, 9, 0];
+
+/* Fruity Convolver stores the impulse path as a length-prefixed string at offset 21. 26 writes
+   the stock impulses under %FLStudioFactoryData%\Data\; 10 knows only %FLStudioData%\ and
+   falls back to Default.wav when the path does not resolve. 10 ships a fraction of the newer
+   impulse library, so the converter points the path at the file of a newer install on this
+   machine when one has it. */
+const CONVOLVER_PATH_OFFSET: usize = 21;
+const IMPULSE_ROOT_NEWER: &[u8] = br"%FLStudioFactoryData%\Data\";
+const IMPULSE_ROOT_FL10: &[u8] = br"%FLStudioData%\";
+const IMAGE_LINE_DIRS: [&str; 2] = [r"C:\Program Files\Image-Line", r"C:\Program Files (x86)\Image-Line"];
 const FL10_D7_LEN: usize = 112;
 const FL10_LANE_LEN: usize = 22;
 const LANE_SHIFT: i32 = 401;
@@ -299,6 +363,9 @@ struct Counts {
     legacy_mapped: Vec<String>,
     legacy_reset: Vec<String>,
     unverified_plugins: Vec<String>,
+    effects_missing: Vec<String>,
+    impulses_resolved: Vec<String>,
+    impulses_missing: Vec<String>,
     insert_flags_lost: usize,
     params_lost: usize,
     sends_lost: usize,
@@ -335,6 +402,9 @@ impl Counts {
             legacy_mapped: Vec::new(),
             legacy_reset: Vec::new(),
             unverified_plugins: Vec::new(),
+            effects_missing: Vec::new(),
+            impulses_resolved: Vec::new(),
+            impulses_missing: Vec::new(),
             insert_flags_lost: 0,
             params_lost: 0,
             sends_lost: 0,
@@ -470,6 +540,8 @@ fn native_state_fl10(name: &str, b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
         "Fruity Parametric EQ 2" => (&[7, 8, 2], 2, 305, None),
         "Fruity Reeverb 2" => (&[0x2711, 0x2710], 0x2710, 58, Some(56)),
         "Fruity Delay 2" | "Fruity Soft Clipper" => return Some(b.to_vec()),
+        "Gross Beat" => return gross_beat_fl10(b, c),
+        "Fruity Convolver" => return convolver_fl10(b, c),
         _ => return None,
     };
     if b.len() < len10 || b.len() < 4 {
@@ -489,6 +561,74 @@ fn native_state_fl10(name: &str, b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
     };
     nb[0..4].copy_from_slice(&to.to_le_bytes());
     c.native_states += 1;
+    Some(nb)
+}
+
+fn plural(n: usize) -> &'static str {
+    if n == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+fn gross_beat_fl10(b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
+    if b.len() < 5 || b[..4] != GROSS_BEAT_HEAD_NEWER {
+        return None;
+    }
+    let mut nb = b[..b.len() - 1].to_vec();
+    nb[0..4].copy_from_slice(&GROSS_BEAT_STATE_FL10.to_le_bytes());
+    c.native_states += 1;
+    Some(nb)
+}
+
+/* newest install first, so a 26 file wins over a 20 copy of the same name */
+fn installed_factory_file(rest: &str) -> Option<String> {
+    let mut installs: Vec<std::path::PathBuf> = IMAGE_LINE_DIRS
+        .iter()
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("FL Studio")))
+        .collect();
+    let release = |p: &std::path::Path| -> u32 {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.trim_start_matches("FL Studio").trim().parse().ok())
+            .unwrap_or(0)
+    };
+    installs.sort_by_key(|p| release(p));
+    installs
+        .into_iter()
+        .rev()
+        .map(|p| p.join("Data").join(rest))
+        .find(|p| p.is_file())
+        .and_then(|p| p.to_str().map(str::to_owned))
+}
+
+fn convolver_fl10(b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
+    let len = usize::from(*b.get(CONVOLVER_PATH_OFFSET)?);
+    let start = CONVOLVER_PATH_OFFSET + 1;
+    let path = b.get(start..start + len)?;
+    if !path.starts_with(IMPULSE_ROOT_NEWER) {
+        return None;
+    }
+    let rest = String::from_utf8_lossy(&path[IMPULSE_ROOT_NEWER.len()..]).into_owned();
+    let new_path: Vec<u8> = match installed_factory_file(&rest) {
+        Some(abs) if abs.is_ascii() && abs.len() <= u8::MAX as usize => {
+            c.impulses_resolved.push(abs.clone());
+            abs.into_bytes()
+        }
+        _ => {
+            c.impulses_missing.push(rest.clone());
+            [IMPULSE_ROOT_FL10, rest.as_bytes()].concat()
+        }
+    };
+    let mut nb = b[..CONVOLVER_PATH_OFFSET].to_vec();
+    nb.push(u8::try_from(new_path.len()).ok()?);
+    nb.extend_from_slice(&new_path);
+    nb.extend_from_slice(&b[start + len..]);
     Some(nb)
 }
 
@@ -759,6 +899,11 @@ fn insert_block(
             0x9B | 0x80 => {}
             op::SLOT_CLOSE => {
                 if let Some(p) = plugin.take() {
+                    let shipped = FL10_EFFECTS.iter().any(|n| n.eq_ignore_ascii_case(&p.internal))
+                        || LEGACY_EFFECTS.iter().any(|fx| fx.name == p.internal);
+                    if !shipped && !c.effects_missing.contains(&p.internal) {
+                        c.effects_missing.push(p.internal.clone());
+                    }
                     if slot < FL10_SLOTS {
                         out.extend(plugin_events(p, true, c));
                     } else {
@@ -812,30 +957,10 @@ fn mixer_params_fl10(b: &[u8], c: &mut Counts, warnings: &mut Vec<String>) -> Ve
     }
 
     let mut out = Vec::with_capacity(1 + usize::from(FL10_STRIPS) * 28);
-    let push = |pid: u8, group: u8, tgt: u16, val: i32, out: &mut Vec<u8>| {
-        out.extend_from_slice(&[0, 0, 0, 0, pid, group]);
-        out.extend_from_slice(&tgt.to_le_bytes());
-        out.extend_from_slice(&val.to_le_bytes());
-    };
-    push(0, 0x00, 0x4000, 12800, &mut out);
-
-    let defaults: [(u8, i32); 12] = [
-        (192, 12800),
-        (193, 0),
-        (194, 0),
-        (208, 0),
-        (209, 0),
-        (210, 0),
-        (216, 5777),
-        (217, 33145),
-        (218, 55825),
-        (224, 17500),
-        (225, 17500),
-        (226, 17500),
-    ];
+    push_param(0, 0x00, 0x4000, 12800, &mut out);
+    let defaults = STRIP_PID_DEFAULTS;
 
     for strip10 in 0..FL10_STRIPS {
-        let base = 0x2000 + strip10 * 0x40;
         let source: Option<u16> = if strip10 <= FL10_INSERTS {
             Some(strip10)
         } else if strip10 == FL10_CURRENT_STRIP {
@@ -843,16 +968,7 @@ fn mixer_params_fl10(b: &[u8], c: &mut Counts, warnings: &mut Vec<String>) -> Ve
         } else {
             None
         };
-        for slot in 0u16..8 {
-            let en = source.and_then(|s| existing.get(&(s, slot, 0)).copied()).unwrap_or(1);
-            let mix = source.and_then(|s| existing.get(&(s, slot, 1)).copied()).unwrap_or(12800);
-            push(0, 0x1F, base + slot, en, &mut out);
-            push(1, 0x1F, base + slot, mix, &mut out);
-        }
-        for (pid, default) in defaults {
-            let v = source.and_then(|s| existing.get(&(s, 0, pid)).copied()).unwrap_or(default);
-            push(pid, 0x1F, base, v, &mut out);
-        }
+        push_strip_fl10(&existing, source, strip10, &mut out);
     }
 
     /* what did not make it: strips 100..125, slots 8/9, send levels */
@@ -879,6 +995,81 @@ fn mixer_params_fl10(b: &[u8], c: &mut Counts, warnings: &mut Vec<String>) -> Ve
             warnings.push(format!(
                 "insert {strip} send level (pid {pid}) is not stored by FL 10; value lost"
             ));
+        }
+    }
+    out
+}
+
+const STRIP_PID_DEFAULTS: [(u8, i32); 12] = [
+    (192, 12800),
+    (193, 0),
+    (194, 0),
+    (208, 0),
+    (209, 0),
+    (210, 0),
+    (216, 5777),
+    (217, 33145),
+    (218, 55825),
+    (224, 17500),
+    (225, 17500),
+    (226, 17500),
+];
+
+fn push_param(pid: u8, group: u8, tgt: u16, val: i32, out: &mut Vec<u8>) {
+    out.extend_from_slice(&[0, 0, 0, 0, pid, group]);
+    out.extend_from_slice(&tgt.to_le_bytes());
+    out.extend_from_slice(&val.to_le_bytes());
+}
+
+fn push_strip_fl10(
+    existing: &std::collections::BTreeMap<(u16, u16, u8), i32>,
+    source: Option<u16>,
+    strip10: u16,
+    out: &mut Vec<u8>,
+) {
+    let base = 0x2000 + strip10 * 0x40;
+    for slot in 0u16..8 {
+        let en = source.and_then(|s| existing.get(&(s, slot, 0)).copied()).unwrap_or(1);
+        let mix = source.and_then(|s| existing.get(&(s, slot, 1)).copied()).unwrap_or(12800);
+        push_param(0, 0x1F, base + slot, en, out);
+        push_param(1, 0x1F, base + slot, mix, out);
+    }
+    for (pid, default) in STRIP_PID_DEFAULTS {
+        let v = source.and_then(|s| existing.get(&(s, 0, pid)).copied()).unwrap_or(default);
+        push_param(pid, 0x1F, base, v, out);
+    }
+}
+
+/* a 10 mixer preset holds one strip: eight slot pairs and the 12-pid run, 28 records, no
+   header record. the strip index is kept when 10 has that strip, else the preset moves to
+   insert 1 — the program ignores the index on load. */
+fn preset_mixer_params_fl10(b: &[u8], c: &mut Counts, warnings: &mut Vec<String>) -> Vec<u8> {
+    use std::collections::BTreeMap;
+    let mut existing: BTreeMap<(u16, u16, u8), i32> = BTreeMap::new();
+    for rec in b.chunks_exact(12) {
+        let pid = rec[4];
+        let tgt = u16::from_le_bytes([rec[6], rec[7]]);
+        let val = i32::from_le_bytes(rec[8..12].try_into().unwrap());
+        if !(0x2000..0x2000 + 127 * 0x40).contains(&tgt) {
+            continue;
+        }
+        existing.insert(((tgt - 0x2000) >> 6, (tgt - 0x2000) & 0x3F, pid), val);
+    }
+    let mut out = Vec::with_capacity(28 * 12);
+    let mut strips: Vec<u16> = existing.keys().map(|k| k.0).collect();
+    strips.dedup();
+    for strip in strips {
+        push_strip_fl10(&existing, Some(strip), fl10_strip(strip).unwrap_or(1), &mut out);
+        for slot in 8u16..10 {
+            let en = existing.get(&(strip, slot, 0)).copied().unwrap_or(1);
+            let mix = existing.get(&(strip, slot, 1)).copied().unwrap_or(12800);
+            if en != 1 || mix != 12800 {
+                c.params_lost += 1;
+                warnings.push(format!(
+                    "preset slot {} mix/enable value lost (FL 10 has 8 slots)",
+                    slot + 1
+                ));
+            }
         }
     }
     out
@@ -1160,6 +1351,8 @@ fn fl20_to_fl10(
                         b.len()
                     ));
                     out.push(ev.clone());
+                } else if src.is_mixer_preset() {
+                    out.push(blob(op::MIXER_PARAMS, preset_mixer_params_fl10(b, &mut c, warnings)));
                 } else {
                     out.push(blob(op::MIXER_PARAMS, mixer_params_fl10(b, &mut c, warnings)));
                 }
@@ -1340,7 +1533,31 @@ fn fl20_to_fl10(
             c.unverified_plugins.join(", ")
         ));
     }
-    notes.push("rebuilt mixer param table to the v10 2941-record shape".into());
+    notes.push(if src.is_mixer_preset() {
+        "rebuilt mixer preset params to the v10 single-strip 28-record shape".into()
+    } else {
+        "rebuilt mixer param table to the v10 2941-record shape".into()
+    });
+    if !c.impulses_resolved.is_empty() {
+        notes.push(format!(
+            "Fruity Convolver impulse path pointed at the file of a newer install on this machine: {}",
+            c.impulses_resolved.join(", ")
+        ));
+    }
+    if !c.impulses_missing.is_empty() {
+        warnings.push(format!(
+            "Fruity Convolver impulse not found in any FL Studio install on this machine; FL 10 loads Default.wav instead. copy the file into FL 10's Data\\Patches folder: {}",
+            c.impulses_missing.join(", ")
+        ));
+    }
+    if !c.effects_missing.is_empty() {
+        warnings.push(format!(
+            "{} mixer effect{} did not ship with FL 10, the slot loads empty: {}",
+            c.effects_missing.len(),
+            plural(c.effects_missing.len()),
+            c.effects_missing.join(", ")
+        ));
+    }
     if c.params_lost > 0 {
         warnings.push(format!(
             "{} non-default mixer parameter values had no FL 10 home and were lost",

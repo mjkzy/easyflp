@@ -25,10 +25,10 @@ fn usage() {
     eprintln!("easyflp {}", env!("CARGO_PKG_VERSION"));
     eprintln!();
     eprintln!("usage:");
-    eprintln!("  easyflp info <file.flp|file.zip>       print project information");
-    eprintln!("  easyflp convert <file.flp|file.zip>    write <name>_easy (v20.0.5) next to the input");
-    eprintln!("  easyflp convert --fl10 <file>          write <name>_easy10 (v10.0.9) — experimental");
-    eprintln!("  easyflp gui [file]                     launch the graphical viewer");
+    eprintln!("  easyflp info <file.flp|file.fst|file.zip>     print project information");
+    eprintln!("  easyflp convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input");
+    eprintln!("  easyflp convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental");
+    eprintln!("  easyflp gui [file]                            launch the graphical viewer");
 }
 
 fn cmd_gui(path: Option<&String>) -> i32 {
@@ -101,6 +101,9 @@ fn cmd_info(path: Option<PathBuf>) -> i32 {
     println!();
     if let Some(entry) = &l.zip_entry {
         println!("zip entry  {entry}");
+    }
+    if !l.flp.is_project() {
+        println!("kind       {}", l.flp.kind_name());
     }
     println!(
         "version    {}{}",

@@ -7,11 +7,11 @@ this is a **work in progress** project, and may have bugs.
 ## how to use
 
 1. run `build_and_run.bat` (builds, kills previous process, runs)
-2. drop a `.flp` or `.zip` containing a FLP file onto the box, or click it to open file explorer
+2. drop a `.flp`, a `.fst` preset (mixer, channel or plugin state) or a `.zip` containing a FLP file onto the box, or click it to open file explorer
 3. if you want to convert the project to version `20.0.5`, click the **convert to v20 project** button
 4. the **⚠ convert to v10 project** button writes a `10.0.9` project instead. the inserts above 99, effect slots 9-10, send levels, clip fades and plugin states do not convert well
 
-the converted file is written next to the input project as `<name>_easy.flp` (`<name>_easy10.flp` for the v10 profile). for a `.zip` looped package, the output is `<name>_easy.zip` with the converted `.flp` and all other files unchanged.
+the converted file is written next to the input project as `<name>_easy.flp` (`<name>_easy10.flp` for the v10 profile). a `.fst` input keeps the `.fst` extension. for a `.zip` looped package, the output is `<name>_easy.zip` with the converted `.flp` and all other files unchanged.
 
 <p align="center">
   <img src=".github/gui.png" alt="the gui information viewer with a loaded project" width="80%">
@@ -27,10 +27,10 @@ the converted file is written next to the input project as `<name>_easy.flp` (`<
 the app is cli, but also bundles a basic GUI .exe for people to use too. usage:
 
 ```
-easyflp info <file.flp|file.zip>       print project information
-easyflp convert <file.flp|file.zip>    write <name>_easy (v20.0.5) next to the input
-easyflp convert --fl10 <file>          write <name>_easy10 (v10.0.9) — experimental
-easyflp gui [file]                     launch the graphical viewer
+easyflp info <file.flp|file.fst|file.zip>     print project information
+easyflp convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input
+easyflp convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental
+easyflp gui [file]                            launch the graphical viewer
 ```
 
 <p align="center">

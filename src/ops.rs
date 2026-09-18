@@ -86,7 +86,15 @@ pub fn convert_and_write(l: &LoadedProject, target: Target) -> Result<ConvertDon
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "project".into());
-    let ext = if l.zip_entry.is_some() { "zip" } else { "flp" };
+    let ext = if l.zip_entry.is_some() {
+        "zip".to_string()
+    } else {
+        l.path
+            .extension()
+            .map(|e| e.to_string_lossy().to_ascii_lowercase())
+            .filter(|e| e == "fst")
+            .unwrap_or_else(|| "flp".into())
+    };
     let out = l.path.with_file_name(format!("{stem}{}.{ext}", target.suffix()));
 
     if let Some(entry) = &l.zip_entry {

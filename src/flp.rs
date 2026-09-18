@@ -154,7 +154,30 @@ pub fn serialize(flp: &Flp) -> Vec<u8> {
     out
 }
 
+pub const FORMAT_PROJECT: u16 = 0x00;
+pub const FORMAT_CHANNEL_PRESET: u16 = 0x20;
+pub const FORMAT_PLUGIN_PRESET: u16 = 0x30;
+pub const FORMAT_MIXER_PRESET: u16 = 0x40;
+
 impl Flp {
+    pub fn is_project(&self) -> bool {
+        self.format == FORMAT_PROJECT
+    }
+
+    pub fn is_mixer_preset(&self) -> bool {
+        self.format == FORMAT_MIXER_PRESET
+    }
+
+    pub fn kind_name(&self) -> &'static str {
+        match self.format {
+            FORMAT_PROJECT => "project",
+            FORMAT_CHANNEL_PRESET => "channel preset",
+            FORMAT_PLUGIN_PRESET => "plugin preset",
+            FORMAT_MIXER_PRESET => "mixer preset",
+            _ => "unknown",
+        }
+    }
+
     pub fn version(&self) -> Option<String> {
         self.events
             .iter()

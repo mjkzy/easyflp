@@ -42,18 +42,21 @@ pub const FL20_KNOWN_OPS: [u8; 104] = [
     0xE5, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1,
 ];
 
-/* 20.8 writes a fixed 4697-record 0xE1 table: a header record, then per strip the ten slot pairs
-   and a fixed pid run whose tail shortens on high strips. 25 rebases targets to 0x7000 (addressing
-   the "current" strip as strip 501) and drops the send/190 tail, so the table is rebuilt from
-   scratch: source values where present, stock defaults elsewhere, unrecognised records appended
-   after their strip's canonical run. */
-fn rebuild_mixer_params(b: &[u8], rebased: &mut usize) -> Vec<u8> {
-    use std::collections::BTreeMap;
+struct MixerParams {
+    existing: std::collections::BTreeMap<(u16, u16, u8), i32>,
+    extras: Vec<(u16, Vec<u8>)>,
+    verbatim: Vec<Vec<u8>>,
+}
 
-    let mut existing: BTreeMap<(u16, u16, u8), i32> = BTreeMap::new();
-    let mut extras: Vec<(u16, Vec<u8>)> = Vec::new();
-    let mut verbatim: Vec<Vec<u8>> = Vec::new();
-
+/* 25 rebases targets to 0x7000 (addressing the "current" strip as strip 501). every record is
+   sorted into its 0x2000-based strip: canonical (strip, offset, pid) keys, duplicates and
+   unrecognised records as extras appended after their strip, out-of-range targets verbatim. */
+fn collect_mixer_params(b: &[u8], rebased: &mut usize) -> MixerParams {
+    let mut p = MixerParams {
+        existing: std::collections::BTreeMap::new(),
+        extras: Vec::new(),
+        verbatim: Vec::new(),
+    };
     for rec in b.chunks_exact(12) {
         let pid = rec[4];
         let tgt = u16::from_le_bytes([rec[6], rec[7]]);
@@ -67,64 +70,96 @@ fn rebuild_mixer_params(b: &[u8], rebased: &mut usize) -> Vec<u8> {
         } else if tgt >= 0x2000 {
             (0x2000u16, ((tgt - 0x2000) >> 6).min(126))
         } else {
-            verbatim.push(rec.to_vec());
+            p.verbatim.push(rec.to_vec());
             continue;
         };
         let off = (tgt - base) & 0x3F;
-        if existing.insert((strip, off, pid), val).is_some() || !canonical_pid(off, pid) {
+        if p.existing.insert((strip, off, pid), val).is_some() || !canonical_pid(off, pid) {
             let nt = 0x2000 + strip * 0x40 + off;
             let mut r = rec.to_vec();
             r[6..8].copy_from_slice(&nt.to_le_bytes());
-            extras.push((strip, r));
+            p.extras.push((strip, r));
         }
     }
+    p
+}
 
-    let mut out = Vec::with_capacity(4697 * 12);
-    let push = |pid: u8, group: u8, tgt: u16, val: i32, out: &mut Vec<u8>| {
-        out.extend_from_slice(&[0, 0, 0, 0, pid, group]);
-        out.extend_from_slice(&tgt.to_le_bytes());
-        out.extend_from_slice(&val.to_le_bytes());
+fn push_mixer_param(pid: u8, group: u8, tgt: u16, val: i32, out: &mut Vec<u8>) {
+    out.extend_from_slice(&[0, 0, 0, 0, pid, group]);
+    out.extend_from_slice(&tgt.to_le_bytes());
+    out.extend_from_slice(&val.to_le_bytes());
+}
+
+fn push_strip_params(p: &mut MixerParams, strip: u16, run: &[(u8, i32)], out: &mut Vec<u8>) {
+    let base = 0x2000 + strip * 0x40;
+    let mut get = |off: u16, pid: u8, default: i32| {
+        p.existing.remove(&(strip, off, pid)).unwrap_or(default)
     };
-    push(0, 0x00, 0x4000, 12800, &mut out);
-    out.extend(verbatim.into_iter().flatten());
+    for slot in 0u16..10 {
+        let en = get(slot, 0, 1);
+        let mix = get(slot, 1, 12800);
+        push_mixer_param(0, 0x1F, base + slot, en, out);
+        push_mixer_param(1, 0x1F, base + slot, mix, out);
+    }
+    for &(pid, default) in run {
+        let v = get(0, pid, default);
+        push_mixer_param(pid, 0x1F, base, v, out);
+    }
+    for (_, r) in p.extras.iter().filter(|(s, _)| *s == strip) {
+        out.extend_from_slice(r);
+    }
+}
 
+/* 20.8 writes a fixed 4697-record 0xE1 table: a header record, then per strip the ten slot pairs
+   and a fixed pid run whose tail shortens on high strips. 25 drops the send/190 tail, so the
+   table is rebuilt from scratch: source values where present, stock defaults elsewhere. */
+fn rebuild_mixer_params(b: &[u8], rebased: &mut usize) -> Vec<u8> {
+    let mut p = collect_mixer_params(b, rebased);
+    let mut out = Vec::with_capacity(4697 * 12);
+    push_mixer_param(0, 0x00, 0x4000, 12800, &mut out);
+    out.extend(std::mem::take(&mut p.verbatim).into_iter().flatten());
     for strip in 0u16..127 {
-        let base = 0x2000 + strip * 0x40;
-        let mut get = |off: u16, pid: u8, default: i32| {
-            existing.remove(&(strip, off, pid)).unwrap_or(default)
-        };
-        for slot in 0u16..10 {
-            let en = get(slot, 0, 1);
-            let mix = get(slot, 1, 12800);
-            push(0, 0x1F, base + slot, en, &mut out);
-            push(1, 0x1F, base + slot, mix, &mut out);
-        }
-        for (pid, default) in strip_pid_run(strip) {
-            let v = get(0, pid, default);
-            push(pid, 0x1F, base, v, &mut out);
-        }
-        for (_, r) in extras.iter().filter(|(s, _)| *s == strip) {
-            out.extend_from_slice(r);
-        }
+        push_strip_params(&mut p, strip, &strip_pid_run(strip), &mut out);
     }
     out
 }
 
+/* a mixer preset (header format 0x40) stores the one strip it was saved from: its ten slot
+   pairs and the 12-pid run, no 0x4000 header record, no send/190 tail. every version from 12
+   to 26 writes this 32-record shape; the program ignores the strip index when it loads the
+   preset. a full 4697-record table makes the program read strip 0's stock values instead. */
+fn rebuild_preset_mixer_params(b: &[u8], rebased: &mut usize) -> Vec<u8> {
+    let mut p = collect_mixer_params(b, rebased);
+    let strips: Vec<u16> = {
+        let mut s: Vec<u16> = p.existing.keys().map(|k| k.0).collect();
+        s.dedup();
+        s
+    };
+    let mut out = Vec::with_capacity(32 * 12);
+    out.extend(std::mem::take(&mut p.verbatim).into_iter().flatten());
+    for strip in strips {
+        push_strip_params(&mut p, strip, &STRIP_PID_DEFAULTS, &mut out);
+    }
+    out
+}
+
+const STRIP_PID_DEFAULTS: [(u8, i32); 12] = [
+    (192, 12800),
+    (193, 0),
+    (194, 0),
+    (208, 0),
+    (209, 0),
+    (210, 0),
+    (216, 5777),
+    (217, 33145),
+    (218, 55825),
+    (224, 17500),
+    (225, 17500),
+    (226, 17500),
+];
+
 fn strip_pid_run(strip: u16) -> Vec<(u8, i32)> {
-    let mut run = vec![
-        (192u8, 12800i32),
-        (193, 0),
-        (194, 0),
-        (208, 0),
-        (209, 0),
-        (210, 0),
-        (216, 5777),
-        (217, 33145),
-        (218, 55825),
-        (224, 17500),
-        (225, 17500),
-        (226, 17500),
-    ];
+    let mut run = STRIP_PID_DEFAULTS.to_vec();
     if strip <= 99 {
         run.extend([(164, 0), (165, 0), (166, 0), (167, 0), (168, 0)]);
     } else if strip <= 104 {
@@ -855,6 +890,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     let mut params_rebased = 0usize;
     let mut links_rebased = 0usize;
     let mut e1_rebuilt = 0usize;
+    let mut e1_preset_rebuilt = 0usize;
     let mut clip_scales_applied = 0usize;
     let mut channel_scales_folded = 0usize;
     let mut stretch_fixed = 0usize;
@@ -1086,6 +1122,10 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
                         b.len()
                     ));
                     out.push(ev.clone());
+                } else if src.is_mixer_preset() {
+                    let nb = rebuild_preset_mixer_params(b, &mut params_rebased);
+                    e1_preset_rebuilt += 1;
+                    out.push(Event { op: op::MIXER_PARAMS, payload: Payload::Blob(nb) });
                 } else {
                     let nb = rebuild_mixer_params(b, &mut params_rebased);
                     e1_rebuilt += 1;
@@ -1180,6 +1220,11 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     push(
         e1_rebuilt,
         "rebuilt mixer param table to the v20 canonical 4697-record shape".into(),
+        &mut notes,
+    );
+    push(
+        e1_preset_rebuilt,
+        "rebuilt mixer preset params to the v20 single-strip shape".into(),
         &mut notes,
     );
     push(
@@ -1749,5 +1794,59 @@ mod tests {
             let rec = v25_clip(len, 0.0, 0.0, 0.988_417_187_181_706);
             assert_eq!(fl20_clip_length(&rec, 80, &[]), (expected, true));
         }
+    }
+
+    fn preset_params(base: u16, strip: u16, volume: i32) -> Vec<u8> {
+        let mut b = Vec::new();
+        let tgt = base + strip * 0x40;
+        for slot in 0u16..10 {
+            push_mixer_param(0, 0x1F, tgt + slot, 1, &mut b);
+            push_mixer_param(1, 0x1F, tgt + slot, 12800, &mut b);
+        }
+        for (pid, default) in STRIP_PID_DEFAULTS {
+            let v = if pid == 192 { volume } else { default };
+            push_mixer_param(pid, 0x1F, tgt, v, &mut b);
+        }
+        b
+    }
+
+    fn mixer_preset(params: Vec<u8>) -> Flp {
+        let mut flp = marker_flp(vec![Event {
+            op: op::MIXER_PARAMS,
+            payload: Payload::Blob(params),
+        }]);
+        flp.format = crate::flp::FORMAT_MIXER_PRESET;
+        flp
+    }
+
+    fn converted_params(flp: &Flp) -> Vec<u8> {
+        to_fl208(flp)
+            .unwrap()
+            .flp
+            .events
+            .iter()
+            .find(|event| event.op == op::MIXER_PARAMS)
+            .and_then(Event::blob)
+            .unwrap()
+            .to_vec()
+    }
+
+    #[test]
+    fn mixer_preset_keeps_its_single_strip() {
+        let source = preset_params(0x2000, 26, 3930);
+        assert_eq!(converted_params(&mixer_preset(source.clone())), source);
+    }
+
+    #[test]
+    fn mixer_preset_rebases_fl25_targets_in_place() {
+        let converted = converted_params(&mixer_preset(preset_params(0x7000, 20, 15233)));
+        assert_eq!(converted, preset_params(0x2000, 20, 15233));
+    }
+
+    #[test]
+    fn project_table_is_still_full_size() {
+        let mut flp = mixer_preset(preset_params(0x2000, 26, 3930));
+        flp.format = crate::flp::FORMAT_PROJECT;
+        assert_eq!(converted_params(&flp).len(), 4697 * 12);
     }
 }
