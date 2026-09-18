@@ -173,7 +173,7 @@ const EQ2_LEN_SHARED: usize = 305;
 
 /* Gross Beat leads with u16 3 and a u16 state version: 8 in 20.0.5, 9 in 26. the 9 body is the
    8 body plus one trailing byte (a 10 save of the 9 state drops exactly that byte, and the
-   20.0.5 default state ends where the 8 body ends). 20.0.5 resets a version 9 state to default. */
+   20.0.5 default state ends where the 8 body ends). 20.0.5 resets a version 9 state to default and resaves the rewritten 8 unchanged. */
 const GROSS_BEAT_TAG: u16 = 3;
 const GROSS_BEAT_STATE_FL200: u16 = 8;
 const GROSS_BEAT_STATE_NEWER: u16 = 9;
@@ -187,6 +187,7 @@ struct Counts {
     limiters: usize,
     eq2: usize,
     gross_beats: usize,
+    preset_slot_names: usize,
     lanes: usize,
     lane_src_len: usize,
     lanes_dropped: usize,
@@ -291,6 +292,7 @@ pub fn fl208_to_fl200(
         limiters: 0,
         eq2: 0,
         gross_beats: 0,
+        preset_slot_names: 0,
         lanes: 0,
         lane_src_len: 0,
         lanes_dropped: 0,
@@ -347,6 +349,10 @@ pub fn fl208_to_fl200(
                 if !in_mixer && !native_exists(&FL200_GENERATORS, &current_plugin) {
                     c.generators_kept.push(current_plugin.clone());
                 }
+                out.push(ev.clone());
+            }
+            op::NAME if in_mixer && src.is_mixer_preset() => {
+                c.preset_slot_names += 1;
                 out.push(ev.clone());
             }
             op::WRAPPER => {
@@ -483,14 +489,16 @@ pub fn fl208_to_fl200(
             "7/8", c.eq2, plural(c.eq2)
         ));
     }
+    if c.preset_slot_names > 0 {
+        warnings.push(format!(
+            "{} effect slot name{} kept, but 20.0.5 discards slot names when it loads a mixer preset (a bug with 20.0.5 i cannot fix myself here)",
+            c.preset_slot_names,
+            plural(c.preset_slot_names)
+        ));
+    }
     if c.gross_beats > 0 {
         notes.push(format!(
             "Gross Beat state {GROSS_BEAT_STATE_NEWER} -> {GROSS_BEAT_STATE_FL200} (trailing byte dropped) on {} plugin{}",
-            c.gross_beats,
-            plural(c.gross_beats)
-        ));
-        warnings.push(format!(
-            "{} Gross Beat state{} rewritten from a 10.0.9 save of the same state; check the slots in 20.0.5",
             c.gross_beats,
             plural(c.gross_beats)
         ));
@@ -606,6 +614,7 @@ mod tests {
             limiters: 0,
             eq2: 0,
             gross_beats: 0,
+            preset_slot_names: 0,
             lanes: 0,
             lane_src_len: 0,
             lanes_dropped: 0,
