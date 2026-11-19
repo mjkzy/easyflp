@@ -34,13 +34,24 @@ jobs:
       - name: Build easyFLP
         run: cargo build --release
 
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc /Q installer\easyflp.iss
+
+      - name: Collect files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\installer\easyflp-setup.exe, target\release\easyflp.exe, target\release\easyflp-cli.exe dist\
+
       - name: Upload easyFLP
         uses: actions/upload-artifact@v4
         with:
           name: easyFLP
-          path: |
-            target/release/easyflp.exe
-            target/release/easyflp-gui.exe
+          path: dist/
 
   release:
     name: Create Release
@@ -68,8 +79,22 @@ jobs:
 
       - name: Create new release
         run: |
-          gh release create latest "easyFLP/easyflp.exe" "easyFLP/easyflp-gui.exe" \
+          cat > notes.md <<'EOF'
+          This build was automated from ${{ github.sha }}.
+
+          **If you are unsure what to download, download `easyflp-setup.exe`.** Run it to install easyflp. It adds easyflp to the Start Menu, and you do not need admin rights. The installer can also add easyflp to the "Open with" menu for `.flp` and `.fst` files.
+
+          The other files:
+
+          - `easyflp.exe` is the easyflp app itself, the same app that the installer installs. Download it if you want a portable app with no install.
+          - `easyflp-cli.exe` is the command line tool, for terminals and scripts. The installer includes it and can add it to PATH.
+
+          `easyflp.exe` was the command line tool in older builds. The command line tool is now `easyflp-cli.exe`, and the old `easyflp-gui.exe` is now `easyflp.exe`.
+
+          The files are not signed, so Windows SmartScreen can show a warning. Click **More info**, then **Run anyway**.
+          EOF
+          gh release create latest "easyFLP/easyflp-setup.exe" "easyFLP/easyflp.exe" "easyFLP/easyflp-cli.exe" \
             --title "Latest Build" \
-            --notes "This build was automated from ${{ github.sha }}. If you are unsure what to download, download **both of the .exe files** that are below. If you just want the non-GUI experience, you only need \`easyflp.exe\`."
+            --notes-file notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

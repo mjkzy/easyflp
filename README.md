@@ -4,9 +4,13 @@ a `.flp` viewer & backport utility for 🥭 version `20.0.5` *(2018)*
 
 this is a **work in progress** project, and may have bugs.
 
+## install
+
+download `easyflp-setup.exe` from the [latest release](https://github.com/mjkzy/easyflp/releases/tag/latest) and run it. easyflp then opens from the start menu. no admin rights needed. `easyflp.exe` on the same page is the portable app, with no install.
+
 ## how to use
 
-1. run `build_and_run.bat` (builds, kills previous process, runs)
+1. open easyflp from the start menu (or run `build_and_run.bat` to build, kill the previous process, and run)
 2. drop a `.flp`, a `.fst` preset (mixer, channel or plugin state) or a `.zip` containing a FLP file onto the box, or click it to open file explorer
 3. if you want to convert the project to version `20.0.5`, click the **convert to v20 project** button
 4. the **⚠ convert to v10 project** button writes a `10.0.9` project instead. the inserts above 99, effect slots 9-10, send levels, clip fades and plugin states do not convert well
@@ -21,20 +25,21 @@ the converted file is written next to the input project as `<name>_easy.flp` (`<
 
 1. install Rust from https://rustup.rs
 2. run `build.bat` or `build_and_run.bat` on windows, `build.sh` or `build_and_run.sh` on linux, or `cargo build --release` on mac.
+3. for the installer, install [Inno Setup 6](https://jrsoftware.org/isdl.php) and run `build_installer.bat`. the output is `target/installer/easyflp-setup.exe`.
 
 ## cli
 
-the app is cli, but also bundles a basic GUI .exe for people to use too. usage:
+`easyflp.exe` is the app. `easyflp-cli.exe` is the command line tool, for terminals and scripts. the installer includes it and can add it to PATH. usage:
 
 ```
-easyflp info <file.flp|file.fst|file.zip>     print project information
-easyflp convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input
-easyflp convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental
-easyflp gui [file]                            launch the graphical viewer
+easyflp-cli info <file.flp|file.fst|file.zip>     print project information
+easyflp-cli convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input
+easyflp-cli convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental
+easyflp-cli gui [file]                            launch the graphical app (easyflp)
 ```
 
 <p align="center">
-  <img src=".github/cli.png" alt="easyflp info output in a terminal" width="50%">
+  <img src=".github/cli.png" alt="easyflp-cli info output in a terminal" width="50%">
 </p>
 
 ## how it works

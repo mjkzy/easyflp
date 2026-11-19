@@ -210,6 +210,20 @@ Unknown plugins keep their state unchanged and are reported.
 - Stretch modes other than 0 and 6.
 - *10* omitted three of the 99 lane records for a reason not understood; *21* filled them with byte 12 = 1. The converter writes all 99.
 
+## Native effect states: Fruity Parametric EQ 2, Soft Clipper, Reeverb 2
+
+A native effect slot carries `0xC9` name, `0xD4` runtime descriptor, `0x9B`, `0x80`, `0xD5` state, then `0x62`. It has no `0xCB`. The layouts below are little-endian, from one *20.0.5* save re-saved by *26.1.5* (mikeDAW `.knowledge/FLP.md` has the same table and the converter in `Source/Import/FLNativeFx.cpp`).
+
+**Fruity Parametric EQ 2.** The version 3 blob is 309 bytes. *26* writes version 8: the same 309 bytes plus a 45-byte tail. Offsets: 0 u32 version. 4 seven i32 gains in centi-dB (-1800..1800). 32 seven i32 frequencies, 0..65536 on a log scale, `Hz = 8.413 * 3411.65^(v/65536)`, defaults 10923, 18204, 25486, 32768, 40050, 47332, 54613. 60 seven i32 bandwidths 0..65536, defaults 40124 for bands 1 and 7 and 25412 for the others. 88 seven i32 types: 0 Off, 1 Low Pass, 2 Band Pass, 3 High Pass, 4 Notch, 5 Low Shelf, 6 Peaking, 7 High Shelf, defaults 5,6,6,6,6,6,7. 116 seven i32 orders -3..3: negative = Steep 8/6/4, 0 = 2-pole, positive = Gentle 4/6/8. 144 eight zero i32. 176 a second freq/bw/type block that always holds the defaults (the compare snapshot). 260 seven zero i32. 288 i32, assumed master level in centi-dB, unverified. 292 u32 3. 296 u32 0. 300 bytes `01 02 00 00`. 304 four zero bytes and a final u8 0.
+
+**Fruity Soft Clipper.** 8 bytes: u32 threshold, u32 post gain, both in 1/128 units (defaults 100 and 128).
+
+**Gross Beat.** *26* writes 35967 bytes at factory slots: a 49-byte header, 72 slot records (0..35 time, 36..71 volume), and a final u8 1. Header offsets: 0 u16 3 and u16 9 (older saves write u16 8). 4 i32 time slot, 0-based. 8 i32 volume slot, 0-based. 12 i32 time mix and 16 i32 volume mix, 256 = 100 %. 20 i32 attack, default 1765, and 24 i32 release, default 1640; knob normalized = v/8192, attack ms = 500 n^3, release ms = 1000 n^3. 28 i32 tension, default 0. 32..48 flags, unresolved. Default header: `03 00 09 00 00 00 00 00 02 00 00 00 00 01 00 00 00 01 00 00 e5 06 00 00 68 06 00 00 00 00 00 00 00 00 00 00 00 00 01 00 01 00 00 00 01 00 01 01 01`.
+
+A slot record is u8 name length, the name, 15 flag bytes (`01`, twelve `00`, `01`, `00`; "Empty" slots have `00` at byte 13), u32 3, u32 3, u32 point count, the points, a u32 trailer (0, or 3 for Drum Loop and Copter), and sixteen `FF` bytes. A point is f64 dx, f64 y, f32 tension, u32 type. dx is the delta from the previous point x; the first dx is absolute and can be above 0. x spans 0..4 beats. type = (aux << 24) | curve, with aux `FF` for tension below 0, 1 above 0, 2 at 0, and sometimes 0. Curve and tension shape the segment into the point. Curves: 0 single, 1 double, 2 hold, 3 stairs, 4 smooth stairs, 5 pulse, 6 wave, 7 half sine, 8 alt single, 9 alt double. A time y is an offset of -(1 - y) * 8 beats. A volume y is the gain.
+
+**Fruity Reeverb 2.** 66 bytes: sixteen u32 `10001, 75, 40, 0, 87, 100, 15, 40, 100, 500, 0, 37, 46, 97, 684, 0` then u16 0 at default settings. The knob order in the manual is Mid/Side, H.Cut, L.Cut, Delay, Size, Diff, Mod, Speed, Bass, Cross, Dec, Damp, Dry, ER, Wet, Sep. The field mapping is unresolved.
+
 ## Cut groups (`0x84`)
 
 `0x84` is a u32 in the channel block: the cut group in the low u16, the cut-by group in the high u16. "Cut itself" is a group of the channel's own, with both words equal and nonzero. The program numbers the groups by creation order and never shares one. Every plugin generator receives the next free group on creation (`0x10001`, `0x20002`, `0x30003`, `0x40004` across four generators in one *24* save). A sampler receives the next free group when the user ticks the box, and stays at 0 otherwise. The layout is the same in *10*, *20.0.5*, *21*, *24*, *25*, and *26*. The converter passes the event through unchanged. A writer that puts one number on several channels makes them choke each other.

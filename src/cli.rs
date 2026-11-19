@@ -22,17 +22,17 @@ fn main() {
 }
 
 fn usage() {
-    eprintln!("easyflp {}", env!("CARGO_PKG_VERSION"));
+    eprintln!("easyflp-cli {}", env!("CARGO_PKG_VERSION"));
     eprintln!();
     eprintln!("usage:");
-    eprintln!("  easyflp info <file.flp|file.fst|file.zip>     print project information");
-    eprintln!("  easyflp convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input");
-    eprintln!("  easyflp convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental");
-    eprintln!("  easyflp gui [file]                            launch the graphical viewer");
+    eprintln!("  easyflp-cli info <file.flp|file.fst|file.zip>     print project information");
+    eprintln!("  easyflp-cli convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input");
+    eprintln!("  easyflp-cli convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental");
+    eprintln!("  easyflp-cli gui [file]                            launch the graphical app (easyflp)");
 }
 
 fn cmd_gui(path: Option<&String>) -> i32 {
-    let name = if cfg!(windows) { "easyflp-gui.exe" } else { "easyflp-gui" };
+    let name = if cfg!(windows) { "easyflp.exe" } else { "easyflp" };
     let exe = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join(name)))

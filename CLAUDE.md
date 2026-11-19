@@ -17,19 +17,20 @@ Read in this order before you change a converter:
 Cargo lives at `%USERPROFILE%\.cargo\bin`. The `.bat` and `.sh` scripts add it to PATH. From Git Bash, run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
 ```bash
-cargo build --release          # both binaries: target/release/easyflp(.exe), easyflp-gui(.exe)
+cargo build --release          # both binaries: target/release/easyflp(.exe) (GUI), easyflp-cli(.exe)
 cargo test                     # 29 unit tests, all in src/convert.rs, about 20 s cold
 cargo test reconciles_wide     # one test by name substring
 cargo test convert::tests::    # the whole module
 build_and_run.bat              # kill the running GUI, build release, relaunch GUI (Windows)
+build_installer.bat            # build release, then target/installer/easyflp-setup.exe (needs Inno Setup 6)
 ```
 
 CLI for scripted checks (exit code 0 on success, notes on `-` lines, warnings on `!` lines):
 
 ```bash
-target/release/easyflp info <file.flp|.fst|.zip>
-target/release/easyflp convert <file>            # writes <name>_easy.flp (v20.0.5) next to the input
-target/release/easyflp convert --fl10 <file>     # writes <name>_easy10.flp (v10.0.9)
+target/release/easyflp-cli info <file.flp|.fst|.zip>
+target/release/easyflp-cli convert <file>        # writes <name>_easy.flp (v20.0.5) next to the input
+target/release/easyflp-cli convert --fl10 <file> # writes <name>_easy10.flp (v10.0.9)
 ```
 
 `info` prints `roundtrip  FAILED` when the parser cannot reproduce the input byte-exact. `convert` refuses that file.
@@ -91,7 +92,7 @@ Known residue that never matches between a converted file and a truth save, and 
 
 ### Dump and diff two saves
 
-`easyflp info` is a summary, not a dump. For research, dump both streams to text and diff. Save this as `flpdump.py` in your scratch directory (the `.debug/` scripts are local copies of the same parser):
+`easyflp-cli info` is a summary, not a dump. For research, dump both streams to text and diff. Save this as `flpdump.py` in your scratch directory (the `.debug/` scripts are local copies of the same parser):
 
 ```python
 import sys
@@ -143,7 +144,7 @@ For one blob type, extract every record of that opcode from both files and compa
 4. Update the gate list or delete set if a new opcode is involved.
 5. Record the rule and its evidence in `FORMAT.md`, in the table of the stage it belongs to. A rule that is not in `FORMAT.md` will be "fixed" back by the next reader.
 6. Add a unit test in `convert.rs` when the rule is computable from a synthetic stream (the existing tests build minimal `Flp` values by hand; copy that pattern).
-7. Verify: `cargo test`, then `easyflp convert` on a real project, then open the output in the target FL version. Loading without an error dialog is the only proof. Diff the converted file against a genuine target-version save and confirm the only residue is the list above.
+7. Verify: `cargo test`, then `easyflp-cli convert` on a real project, then open the output in the target FL version. Loading without an error dialog is the only proof. Diff the converted file against a genuine target-version save and confirm the only residue is the list above.
 
 ### Add a new FL version
 

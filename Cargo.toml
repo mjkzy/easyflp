@@ -9,11 +9,11 @@ path = "src/lib.rs"
 
 [[bin]]
 name = "easyflp"
-path = "src/cli.rs"
+path = "src/gui/main.rs"
 
 [[bin]]
-name = "easyflp-gui"
-path = "src/gui/main.rs"
+name = "easyflp-cli"
+path = "src/cli.rs"
 
 [dependencies]
 eframe = "0.31"

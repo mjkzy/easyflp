@@ -1,6 +1,6 @@
 # What this is
 
-a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25/26 projects to 20.0.5's format. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The CLI `easyflp.exe` is the main app. The GUI `easyflp-gui.exe` (eframe/egui) is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
+a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25/26 projects to 20.0.5's format. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The GUI `easyflp.exe` (eframe/egui) is the main app. The CLI `easyflp-cli.exe` is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
 
 ## Build / run / verify
 
@@ -8,7 +8,7 @@ a Rust cross-platform tool (Windows-first) that views `.flp` project information
 build_and_run.bat
 ```
 
-The script kills a running easyflp-gui.exe, builds Release (both binaries), and relaunches the GUI. Scripted checks use the CLI: `easyflp.exe convert <file>` (prints notes/warnings; exit code reports success) and `easyflp.exe info <file>` (prints project information). Legacy `--convert` / `--info` spellings still work.
+The script kills a running easyflp.exe, builds Release (both binaries), and relaunches the GUI. Scripted checks use the CLI: `easyflp-cli.exe convert <file>` (prints notes/warnings; exit code reports success) and `easyflp-cli.exe info <file>` (prints project information). Legacy `--convert` / `--info` spellings still work.
 
 Cargo lives at `%USERPROFILE%\.cargo\bin`; the .bat scripts add it to PATH.
 
@@ -22,9 +22,10 @@ Cargo lives at `%USERPROFILE%\.cargo\bin`; the .bat scripts add it to PATH.
 - `src/wrapper.rs` — Fruity Wrapper state chunk parse/build, shared by both back-end profiles.
 - `src/package.rs` — zip read/write (a `.zip` input carries its non-flp entries through).
 - `src/ops.rs` — shared load / convert / write operations; the single implementation both binaries call.
-- `src/cli.rs` — the `easyflp` binary: `info`, `convert`, `gui` subcommands.
-- `src/gui/main.rs` — the `easyflp-gui` binary entry point.
+- `src/cli.rs` — the `easyflp-cli` binary: `info`, `convert`, `gui` subcommands.
+- `src/gui/main.rs` — the `easyflp` binary (the GUI app) entry point.
 - `src/gui/app.rs` — the egui UI (drop zone, info panels, convert button).
+- `installer/easyflp.iss` — the Inno Setup 6 script for `easyflp-setup.exe`. It reads the version from `Cargo.toml`.
 
 ## Invariants
 
