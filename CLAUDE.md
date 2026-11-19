@@ -181,9 +181,9 @@ The rules that are most easy to forget:
 ### UI record
 
 - **The UI harness**: none yet. Until one exists, check UI changes with `build_and_run.bat` and a screenshot of the real window.
-- **Standards this app settled on**: colour constants at the top of `src/gui/app.rs` (`BG`, `PANEL`, `PANEL_LIT`, `ACCENT`, `VIOLET`, `BTN`, `TEXT`, `DIM`, `WHITE`, `OK`, `ERR`, `WARN`). Hover tween `HOVER_ANIM_SECS` = 0.18 s, mixed with `mix()`. Window 1020x680 by default, 720x480 minimum (`src/gui/main.rs`). Text is all lowercase today.
-- **The user's directions**: the `ui-harness` skill governs all UI work (November 2026).
-- **Harness gaps**: no preview harness, no fake state, and no screenshot script. The target hints (`FL20_HINT`, `FL24_HINT`, `FL21_HINT`, `FL10_HINT`) and the all-lowercase labels conflict with the skill and are not yet reviewed against it.
+- **Standards this app settled on**: colour constants at the top of `src/gui/app.rs` (`BG`, `PANEL`, `PANEL_LIT`, `ACCENT`, `VIOLET`, `BTN`, `TEXT`, `DIM`, `WHITE`, `OK`, `ERR`). Target buttons: "convert to v20 project" in the accent, then "to v24", "to v21", "to v10" in `TEXT`; only v10 keeps a tooltip (`FL10_HINT`, what the profile loses). No "open it in FL ..." line after a conversion. Hover tween `HOVER_ANIM_SECS` = 0.18 s, mixed with `mix()`. Window 1020x680 by default, 720x480 minimum (`src/gui/main.rs`). All UI text is lowercase, a deliberate theme. Counts take the singular for 1 (`plural()`). Both info grids use `min_col_width(132.0)`, so their value columns align. Separators are parentheses, never dashes.
+- **The user's directions**: the `ui-harness` skill governs all UI work (November 2026). The v10 button says "to v10", and the "open it in FL ... and check ..." lines are removed (the user's call, November 2026). Keep the all-lowercase theme over the skill's sentence case; singular counts and no dash separators (the user's call, November 2026; sentence case was tried and reverted).
+- **Harness gaps**: no preview harness, no fake state, and no screenshot script. The conversion modal and the warning lines were not shot after the separator and count change.
 
 ## Pitfalls that cost past sessions
 

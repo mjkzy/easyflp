@@ -15,18 +15,14 @@ const DIM: Color32 = Color32::from_rgb(0x5E, 0x5E, 0x68);
 const WHITE: Color32 = Color32::from_rgb(0xE9, 0xE9, 0xEF);
 const OK: Color32 = Color32::from_rgb(0x45, 0xD8, 0x6A);
 const ERR: Color32 = Color32::from_rgb(0xFF, 0x4D, 0x6A);
-const WARN: Color32 = Color32::from_rgb(0xF5, 0xB8, 0x3D);
 
 const HOVER_ANIM_SECS: f32 = 0.18;
 
-const FL20_HINT: &str = "writes the 20.0.5.681 layout. it opens in FL 20.0.5 and in every later 20.x version";
+const FL10_HINT: &str = "experimental. inserts above 99, slots 9 and 10, send levels, clip fades and newer plugin states are lost";
 
-const FL24_HINT: &str = "writes the 24.2.2 layout from a v25 or v26 save. built from corpus saves, not load-tested in FL 24 yet - read the warnings";
-
-const FL21_HINT: &str = "writes the 21.2.3 layout from a v24, v25 or v26 save. built from corpus saves, not load-tested in FL 21 yet - read the warnings";
-
-const FL10_HINT: &str = "experimental: writes a 10.0.9 project. inserts above 99, slots 9-10, \
-send levels, clip fades and post-v10 plugin states do not survive - read the warnings";
+fn plural(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
 
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     egui::lerp(egui::Rgba::from(a)..=egui::Rgba::from(b), t).into()
@@ -170,23 +166,16 @@ impl App {
                             egui::Button::new(RichText::new("convert to v20 project").color(ACCENT))
                                 .fill(BTN),
                         )
-                        .on_hover_text(FL20_HINT)
-                        .on_disabled_hover_text(FL20_HINT)
                         .clicked()
                     {
                         self.run_convert(ops::Target::Fl20);
                     }
-                    for (target, label, hint) in [
-                        (ops::Target::Fl24, "to v24", FL24_HINT),
-                        (ops::Target::Fl21, "to v21", FL21_HINT),
-                    ] {
+                    for (target, label) in [(ops::Target::Fl24, "to v24"), (ops::Target::Fl21, "to v21")] {
                         if ui
                             .add_enabled(
                                 convertible(target),
                                 egui::Button::new(RichText::new(label).color(TEXT)).fill(BTN),
                             )
-                            .on_hover_text(hint)
-                            .on_disabled_hover_text(hint)
                             .clicked()
                         {
                             self.run_convert(target);
@@ -195,7 +184,7 @@ impl App {
                     if ui
                         .add_enabled(
                             convertible(ops::Target::Fl10),
-                            egui::Button::new(RichText::new("\u{26A0} convert to v10 project").color(WARN))
+                            egui::Button::new(RichText::new("to v10").color(TEXT))
                                 .fill(BTN),
                         )
                         .on_hover_text(FL10_HINT)
@@ -224,12 +213,12 @@ impl App {
                                 .file_name()
                                 .map(|s| s.to_string_lossy().into_owned())
                                 .unwrap_or_default();
-                            ui.add_space(14.0);
-                            ui.label(
-                                RichText::new(name)
-                                    .color(DIM)
-                                    .monospace(),
-                            );
+                            let font = egui::TextStyle::Monospace.resolve(ui.style());
+                            let width = ui.fonts(|f| f.layout_no_wrap(name.clone(), font, DIM).size().x);
+                            if width + 28.0 <= ui.available_width() {
+                                ui.add_space(14.0);
+                                ui.label(RichText::new(name).color(DIM).monospace());
+                            }
                         }
                     });
                 });
@@ -256,7 +245,7 @@ impl App {
                         if warnings > 0 {
                             ui.add_space(4.0);
                             ui.label(
-                                RichText::new(format!("{warnings} warning(s) — see the conversion section for details"))
+                                RichText::new(plural(warnings as u64, "warning", "warnings"))
                                     .color(VIOLET),
                             );
                         }
@@ -315,14 +304,14 @@ impl App {
         ui.painter().text(
             c - egui::vec2(0.0, 18.0),
             Align2::CENTER_CENTER,
-            "drop a .flp, .fst, or project .zip here",
+            "drop a .flp, .fst or project .zip here",
             FontId::monospace(24.0),
             WHITE,
         );
         ui.painter().text(
             c + egui::vec2(0.0, 16.0),
             Align2::CENTER_CENTER,
-            "or click to use file explorer",
+            "or click to browse",
             FontId::monospace(14.0),
             mix(DIM, TEXT, t),
         );
@@ -346,7 +335,7 @@ impl App {
                 ui.style_mut().interaction.selectable_labels = true;
                 ui.label(RichText::new("project").color(ACCENT).strong());
                 ui.add_space(4.0);
-                egui::Grid::new("project").num_columns(2).spacing([28.0, 5.0]).show(ui, |ui| {
+                egui::Grid::new("project").num_columns(2).spacing([28.0, 5.0]).min_col_width(132.0).show(ui, |ui| {
                     let mut row = |k: &str, v: String| {
                         ui.label(RichText::new(k).color(DIM));
                         ui.label(RichText::new(v).color(WHITE).monospace());
@@ -364,7 +353,7 @@ impl App {
                         format!(
                             "{}{}",
                             l.info.version,
-                            l.info.build.map(|b| format!("  build {b}")).unwrap_or_default()
+                            l.info.build.map(|b| format!(" (build {b})")).unwrap_or_default()
                         ),
                     );
                     if !l.info.title.is_empty() {
@@ -377,20 +366,21 @@ impl App {
                 });
 
                 section(ui, "format profile");
-                egui::Grid::new("profile").num_columns(2).spacing([28.0, 5.0]).show(ui, |ui| {
+                egui::Grid::new("profile").num_columns(2).spacing([28.0, 5.0]).min_col_width(132.0).show(ui, |ui| {
                     let mut row = |k: &str, v: String| {
                         ui.label(RichText::new(k).color(DIM));
                         ui.label(RichText::new(v).color(WHITE).monospace());
                         ui.end_row();
                     };
                     if let Some(m) = l.info.wrapper_marker {
-                        row("wrapper marker", format!("{m}  ({})", if m >= 12 { "v24/25" } else { "v20/21" }));
+                        row("wrapper marker", format!("{m} ({})", if m >= 12 { "v24/25" } else { "v20/21" }));
                     }
                     if let Some(s) = l.info.clip_record_size {
                         row(
                             "clip record",
                             format!(
-                                "{s} bytes  ({})",
+                                "{} ({})",
+                                plural(s as u64, "byte", "bytes"),
                                 match s {
                                     80 => "v25",
                                     88 => "v26+",
@@ -401,14 +391,14 @@ impl App {
                         );
                     }
                     if let Some(s) = l.info.lane_record_size {
-                        row("lane record", format!("{s} bytes  ({})", if s >= 70 { "v24/25" } else { "v20/21" }));
+                        row("lane record", format!("{} ({})", plural(s as u64, "byte", "bytes"), if s >= 70 { "v24/25" } else { "v20/21" }));
                     }
                     if let Some(s) = l.info.route_table_size {
-                        row("route table", format!("{s} bytes  ({})", if s < 127 { "v25" } else { "v20-24" }));
+                        row("route table", format!("{} ({})", plural(s as u64, "byte", "bytes"), if s < 127 { "v25" } else { "v20-24" }));
                     }
                     row("channel routing", l.info.route_style.to_string());
                     if let Some(b) = l.info.mixer_param_base {
-                        row("mixer param base", format!("0x{b:04X}  ({})", if b == 0x7000 { "v25" } else { "v20-24" }));
+                        row("mixer param base", format!("0x{b:04X} ({})", if b == 0x7000 { "v25" } else { "v20-24" }));
                     }
                 });
 
@@ -417,7 +407,7 @@ impl App {
                     for c in &l.info.channels {
                         let mut line = format!("{:>3}  {:<11} {}", c.iid, info::kind_name(c.kind), c.name);
                         if !c.detail.is_empty() && c.detail != c.name {
-                            line.push_str(&format!("  —  {}", c.detail));
+                            line.push_str(&format!(" ({})", c.detail));
                         }
                         ui.label(RichText::new(line).color(TEXT).monospace());
                     }
@@ -434,10 +424,10 @@ impl App {
                     for p in used {
                         ui.label(
                             RichText::new(format!(
-                                "{:>3}  {:<24} {} notes",
+                                "{:>3}  {:<24} {}",
                                 p.id,
                                 p.name.clone().unwrap_or_else(|| format!("Pattern {}", p.id)),
-                                p.notes
+                                plural(p.notes as u64, "note", "notes")
                             ))
                             .color(TEXT)
                             .monospace(),
@@ -448,8 +438,10 @@ impl App {
                 section(ui, "playlist");
                 ui.label(
                     RichText::new(format!(
-                        "{} pattern clips, {} audio clips on {} lanes",
-                        l.info.pattern_clips, l.info.audio_clips, l.info.lanes_used
+                        "{}, {} on {}",
+                        plural(l.info.pattern_clips as u64, "pattern clip", "pattern clips"),
+                        plural(l.info.audio_clips as u64, "audio clip", "audio clips"),
+                        plural(l.info.lanes_used as u64, "lane", "lanes")
                     ))
                     .color(TEXT)
                     .monospace(),
@@ -482,7 +474,7 @@ impl App {
                     ui.add_space(12.0);
                     ui.label(
                         RichText::new(
-                            "parser cannot reproduce this file byte-exact — conversion disabled for safety",
+                            "parser cannot reproduce this file byte-exact, conversion disabled",
                         )
                         .color(ERR),
                     );
@@ -492,7 +484,7 @@ impl App {
                     ui.label(RichText::new("nothing to convert").color(OK));
                 } else if !ops::Target::Fl20.applicable(l.info.major, l.info.minor) && l.roundtrip_ok {
                     ui.add_space(12.0);
-                    ui.label(RichText::new("already v20.0 or older - only the v10 profile applies").color(OK));
+                    ui.label(RichText::new("already v20.0 or older (v10 only)").color(OK));
                 }
 
                 if let Some(done) = &self.done {
@@ -507,30 +499,6 @@ impl App {
                     }
                     for w in &done.warnings {
                         ui.label(RichText::new(format!("! {w}")).color(VIOLET).monospace());
-                    }
-                    if done.target == ops::Target::Fl20 {
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new("open it in FL 20 and check the mixer and plugins")
-                                .color(TEXT),
-                        );
-                    }
-                    if matches!(done.target, ops::Target::Fl21 | ops::Target::Fl24) {
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new(format!(
-                                "open it in FL {} and check the mixer, plugins and audio clips",
-                                &done.target.label()[1..]
-                            ))
-                            .color(TEXT),
-                        );
-                    }
-                    if done.target == ops::Target::Fl10 {
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new("\u{26A0} v10 output is experimental - open it in FL 10 and check the mixer, plugins and playlist")
-                                .color(WARN),
-                        );
                     }
                 }
                 if let Some(err) = &self.error {
