@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{convert10, convert200, flp, info, package};
+use crate::{convert10, convert200, convert24, flp, info, package};
 
 pub struct LoadedProject {
     pub path: PathBuf,
@@ -14,6 +14,8 @@ pub struct LoadedProject {
 #[derive(Clone, Copy, PartialEq)]
 pub enum Target {
     Fl20,
+    Fl21,
+    Fl24,
     Fl10,
 }
 
@@ -21,6 +23,8 @@ impl Target {
     pub fn suffix(self) -> &'static str {
         match self {
             Target::Fl20 => "_easy",
+            Target::Fl21 => "_easy21",
+            Target::Fl24 => "_easy24",
             Target::Fl10 => "_easy10",
         }
     }
@@ -28,6 +32,8 @@ impl Target {
     pub fn label(self) -> &'static str {
         match self {
             Target::Fl20 => "v20",
+            Target::Fl21 => "v21",
+            Target::Fl24 => "v24",
             Target::Fl10 => "v10",
         }
     }
@@ -35,6 +41,8 @@ impl Target {
     pub fn applicable(self, major: u32, minor: u32) -> bool {
         match self {
             Target::Fl20 => major > 20 || (major == 20 && minor > 0),
+            Target::Fl21 => major > 21,
+            Target::Fl24 => major > 24,
             Target::Fl10 => major > 10,
         }
     }
@@ -78,6 +86,8 @@ pub fn convert_and_write(l: &LoadedProject, target: Target) -> Result<ConvertDon
     }
     let outcome = match target {
         Target::Fl20 => convert200::to_fl200(&l.flp)?,
+        Target::Fl21 => convert24::to_fl21(&l.flp)?,
+        Target::Fl24 => convert24::to_fl24(&l.flp)?,
         Target::Fl10 => convert10::to_fl10(&l.flp)?,
     };
     let bytes = flp::serialize(&outcome.flp);

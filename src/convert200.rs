@@ -251,13 +251,7 @@ fn native_state_fl200(name: &str, b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
         return Some(nb);
     }
     if name == "Gross Beat" {
-        let tag = u16::from_le_bytes([b[0], b[1]]);
-        let version = u16::from_le_bytes([b[2], b[3]]);
-        if tag != GROSS_BEAT_TAG || version != GROSS_BEAT_STATE_NEWER || b.len() < 5 {
-            return None;
-        }
-        let mut nb = b[..b.len() - 1].to_vec();
-        nb[2..4].copy_from_slice(&GROSS_BEAT_STATE_FL200.to_le_bytes());
+        let nb = gross_beat_state_8(b)?;
         c.gross_beats += 1;
         return Some(nb);
     }
@@ -270,7 +264,21 @@ fn native_state_fl200(name: &str, b: &[u8], c: &mut Counts) -> Option<Vec<u8>> {
     Some(nb)
 }
 
-fn plural(n: usize) -> &'static str {
+pub(crate) fn gross_beat_state_8(b: &[u8]) -> Option<Vec<u8>> {
+    if b.len() < 5 {
+        return None;
+    }
+    let tag = u16::from_le_bytes([b[0], b[1]]);
+    let version = u16::from_le_bytes([b[2], b[3]]);
+    if tag != GROSS_BEAT_TAG || version != GROSS_BEAT_STATE_NEWER {
+        return None;
+    }
+    let mut nb = b[..b.len() - 1].to_vec();
+    nb[2..4].copy_from_slice(&GROSS_BEAT_STATE_FL200.to_le_bytes());
+    Some(nb)
+}
+
+pub(crate) fn plural(n: usize) -> &'static str {
     if n == 1 {
         ""
     } else {

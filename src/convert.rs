@@ -42,6 +42,115 @@ pub const FL20_KNOWN_OPS: [u8; 104] = [
     0xE5, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC, 0xED, 0xEE, 0xEF, 0xF1,
 ];
 
+/* the structural differences between the stream a 25/26 save holds and the stream an older
+   target version writes. every field rests on the evidence that FORMAT.md lists for its
+   target. one pass (`retarget`) applies a layout; profile post-passes handle plugin states. */
+pub struct Layout {
+    pub label: &'static str,
+    pub full_label: &'static str,
+    pub major: u32,
+    pub version: &'static str,
+    pub build: u32,
+    pub registration: &'static [u8],
+    pub delete_ops: &'static [u8],
+    pub known_extra_ops: &'static [u8],
+    pub clip_size: usize,
+    pub d7_len: usize,
+    pub lane_len: usize,
+    pub wrapper_state: u32,
+    pub stretch_f32: bool,
+    pub pattern_markers: bool,
+    pub emulate_fades: bool,
+    pub reconcile_end_trims: bool,
+    pub header_a9: Option<u32>,
+}
+
+pub const FL208: Layout = Layout {
+    label: "v20",
+    full_label: "v20.8",
+    major: 20,
+    version: FL20_VERSION,
+    build: FL20_BUILD,
+    registration: &FL20_REGISTRATION,
+    delete_ops: &POST_FL20_OPS,
+    known_extra_ops: &[],
+    clip_size: 32,
+    d7_len: 158,
+    lane_len: 66,
+    wrapper_state: 10,
+    stretch_f32: false,
+    pattern_markers: false,
+    emulate_fades: true,
+    reconcile_end_trims: true,
+    header_a9: None,
+};
+
+/* 21.2 and 24.2 write this 10-byte registration stand-in in 53 of 66 corpus saves. */
+const REGISTRATION_STAND_IN: [u8; 10] = [0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x20, 0x00, 0x00, 0x00];
+
+/* opcodes that 25.x and 26.x saves hold and that no 24.2 save in the corpus holds. */
+const POST_FL24_OPS: [u8; 11] = [0x33, 0x34, 0x67, 0x8E, 0xAA, 0xAB, 0xAC, 0xC0, 0xFB, 0xFC, 0xFD];
+
+/* the POST_FL24_OPS set plus the opcodes that 24.2 saves hold and no 21.2.3 save holds. */
+const POST_FL21_OPS: [u8; 15] = [
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x67, 0x8E, 0xA9, 0xAA, 0xAB, 0xAC, 0xC0, 0xFB, 0xFC, 0xFD,
+];
+
+const FL24_EXTRA_OPS: [u8; 18] = [
+    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x65, 0xA5, 0xA6, 0xA7, 0xA8,
+    0xA9, 0xF2, 0xF3,
+];
+
+const FL21_EXTRA_OPS: [u8; 14] = [
+    0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x65, 0xA5, 0xA6, 0xA7, 0xA8, 0xF2, 0xF3,
+];
+
+pub const FL24_VERSION: &str = "24.2.2.4597";
+pub const FL21_VERSION: &str = "21.2.3.4004";
+
+/* 24.2 stores the sampler stretch time as f32 and keeps the 70-byte lane record. its 0xA9
+   header event holds 5 (25 writes 7, 26 writes 15). clip fades are native in the 60-byte
+   record, so no emulation runs. */
+pub const FL24: Layout = Layout {
+    label: "v24",
+    full_label: "v24.2",
+    major: 24,
+    version: FL24_VERSION,
+    build: 4597,
+    registration: &REGISTRATION_STAND_IN,
+    delete_ops: &POST_FL24_OPS,
+    known_extra_ops: &FL24_EXTRA_OPS,
+    clip_size: 60,
+    d7_len: 168,
+    lane_len: 70,
+    wrapper_state: 12,
+    stretch_f32: true,
+    pattern_markers: true,
+    emulate_fades: false,
+    reconcile_end_trims: false,
+    header_a9: Some(5),
+};
+
+pub const FL21: Layout = Layout {
+    label: "v21",
+    full_label: "v21.2",
+    major: 21,
+    version: FL21_VERSION,
+    build: 4004,
+    registration: &REGISTRATION_STAND_IN,
+    delete_ops: &POST_FL21_OPS,
+    known_extra_ops: &FL21_EXTRA_OPS,
+    clip_size: 60,
+    d7_len: 168,
+    lane_len: 66,
+    wrapper_state: 10,
+    stretch_f32: false,
+    pattern_markers: true,
+    emulate_fades: false,
+    reconcile_end_trims: false,
+    header_a9: None,
+};
+
 struct MixerParams {
     existing: std::collections::BTreeMap<(u16, u16, u8), i32>,
     extras: Vec<(u16, Vec<u8>)>,
@@ -198,6 +307,7 @@ fn stretch_time_units(d7: &[u8]) -> Option<f64> {
 fn fix_stretch_time(
     d7: &mut [u8],
     scale: Option<f64>,
+    to_f32: bool,
     fixed: &mut usize,
     scales_folded: &mut usize,
 ) {
@@ -205,14 +315,18 @@ fn fix_stretch_time(
         return;
     };
     let raw = u32::from_le_bytes(d7[96..100].try_into().unwrap());
-    if raw >= 0x1000_0000 {
+    if (raw >= 0x1000_0000) != to_f32 {
         *fixed += 1;
     }
     if let Some(scale) = scale {
         units *= scale;
         *scales_folded += 1;
     }
-    let v = units.round() as u32;
+    let v = if to_f32 {
+        (units as f32).to_bits()
+    } else {
+        units.round() as u32
+    };
     d7[96..100].copy_from_slice(&v.to_le_bytes());
 }
 
@@ -828,13 +942,18 @@ fn fade_clip_record(g: &FadeGroup, src_rec: &[u8]) -> [u8; 32] {
 }
 
 pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
+    retarget(src, &FL208)
+}
+
+pub fn retarget(src: &Flp, layout: &Layout) -> Result<Outcome, String> {
     let version = src.version().ok_or("file has no version event (0xC7)")?;
     let major = src
         .version_major()
         .ok_or_else(|| format!("cannot parse version \"{version}\""))?;
-    if major <= 20 {
+    if major <= layout.major {
         return Err(format!("already v{version}, nothing to convert"));
     }
+    let label = layout.label;
 
     let playlist_len = src
         .events
@@ -864,12 +983,15 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     let mut out: Vec<Event> = Vec::with_capacity(src.events.len());
 
     let channel_scales = channel_stretch_scales(src, clip_size, &mut warnings);
-    let tick_ms = (clip_size >= 60).then(|| tick_milliseconds(src)).flatten();
+    let rewrite_clips = clip_size > layout.clip_size;
+    let tick_ms = (rewrite_clips && layout.reconcile_end_trims)
+        .then(|| tick_milliseconds(src))
+        .flatten();
     let end_trim_ratios = match tick_ms {
         Some(tick) => channel_playback_ratios(src, clip_size, &channel_scales, tick),
         None => Vec::new(),
     };
-    let fade_groups = if clip_size >= 60 {
+    let fade_groups = if rewrite_clips && layout.emulate_fades {
         plan_fades(src, clip_size, &channel_scales, &mut warnings)
     } else {
         Vec::new()
@@ -920,7 +1042,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
         /* 21+ appends a default 4/4 time-signature marker to every pattern metadata block. 20.8
            keeps markers in the arrangement only, and its pattern blocks hold no 0x94 run, so the
            run is dropped here while arrangement markers pass through. */
-        if !POST_FL20_OPS.contains(&ev.op) {
+        if !layout.pattern_markers && !layout.delete_ops.contains(&ev.op) {
             match ev.op {
                 op::PATTERN_NEW => {
                     in_pattern = true;
@@ -957,7 +1079,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
             }
         }
         match ev.op {
-            o if POST_FL20_OPS.contains(&o) => deleted += 1,
+            o if layout.delete_ops.contains(&o) => deleted += 1,
             /* 26 writes a second 0xAC in the project header, followed by a 0x00 (channel enabled)
                event that precedes every channel. 20.8 writes 0x00 inside channel blocks only. */
             0x00 if chan_idx == 0 => deleted += 1,
@@ -976,14 +1098,18 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
                 }
             }
             op::VERSION => {
-                let mut b = FL20_VERSION.as_bytes().to_vec();
+                let mut b = layout.version.as_bytes().to_vec();
                 b.push(0);
                 out.push(Event { op: op::VERSION, payload: Payload::Blob(b) });
             }
-            op::BUILD => out.push(Event { op: op::BUILD, payload: Payload::U32(FL20_BUILD) }),
+            op::BUILD => out.push(Event { op: op::BUILD, payload: Payload::U32(layout.build) }),
             0xC8 => out.push(Event {
                 op: 0xC8,
-                payload: Payload::Blob(FL20_REGISTRATION.to_vec()),
+                payload: Payload::Blob(layout.registration.to_vec()),
+            }),
+            0xA9 if layout.header_a9.is_some() => out.push(Event {
+                op: 0xA9,
+                payload: Payload::U32(layout.header_a9.unwrap_or_default()),
             }),
             // saves carry out-of-range selected insert values (216 in both truth files); 126, the "current" strip, is the hand-verified one
             0x85 => out.push(Event {
@@ -1002,8 +1128,8 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
                 let mut b = ev.blob().ok_or("0xD5 without blob payload")?.to_vec();
                 if current_plugin == "Fruity Wrapper" && b.len() >= 4 {
                     let marker = u32::from_le_bytes(b[0..4].try_into().unwrap());
-                    if marker > 10 {
-                        b[0..4].copy_from_slice(&10u32.to_le_bytes());
+                    if marker > layout.wrapper_state {
+                        b[0..4].copy_from_slice(&layout.wrapper_state.to_le_bytes());
                         markers += 1;
                     }
                 }
@@ -1011,9 +1137,9 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
             }
             op::CHANNEL_DECO => {
                 let b = ev.blob().ok_or("0xD7 without blob payload")?;
-                let mut nb = if b.len() > 158 {
+                let mut nb = if b.len() > layout.d7_len {
                     d7_truncated += 1;
-                    b[..158].to_vec()
+                    b[..layout.d7_len].to_vec()
                 } else {
                     b.to_vec()
                 };
@@ -1024,6 +1150,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
                 fix_stretch_time(
                     &mut nb,
                     scale,
+                    layout.stretch_f32,
                     &mut stretch_fixed,
                     &mut channel_scales_folded,
                 );
@@ -1031,7 +1158,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
             }
             op::PLAYLIST => {
                 let b = ev.blob().ok_or("0xE9 without blob payload")?;
-                if clip_size == 32 || b.is_empty() {
+                if !rewrite_clips || b.is_empty() {
                     out.push(ev.clone());
                 } else {
                     if b.len() % clip_size != 0 {
@@ -1040,12 +1167,12 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
                             b.len()
                         ));
                     }
-                    let mut nb = Vec::with_capacity(b.len() / clip_size * 32);
+                    let mut nb = Vec::with_capacity(b.len() / clip_size * layout.clip_size);
                     for rec in b.chunks_exact(clip_size) {
                         let (len, scale_applied) =
                             fl20_clip_length(rec, clip_size, &channel_scales);
                         let chan = u16::from_le_bytes([rec[6], rec[7]]);
-                        let mut converted = rec[..32].to_vec();
+                        let mut converted = rec[..layout.clip_size].to_vec();
                         converted[8..12].copy_from_slice(&len.to_le_bytes());
                         if let (Some(tick), Some(ratio)) = (
                             tick_ms,
@@ -1066,7 +1193,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
                                         let pos =
                                             u32::from_le_bytes(rec[0..4].try_into().unwrap());
                                         warnings.push(format!(
-                                            "channel {chan} clip at {pos}: trim window shorter than the clip; v20 shortens it on load"
+                                            "channel {chan} clip at {pos}: trim window shorter than the clip; {label} shortens it on load"
                                         ));
                                     }
                                 }
@@ -1096,9 +1223,12 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
             }
             op::LANE => {
                 let b = ev.blob().ok_or("0xEE without blob payload")?;
-                if b.len() > 66 {
+                if b.len() > layout.lane_len {
                     lanes_truncated += 1;
-                    out.push(Event { op: op::LANE, payload: Payload::Blob(b[..66].to_vec()) });
+                    out.push(Event {
+                        op: op::LANE,
+                        payload: Payload::Blob(b[..layout.lane_len].to_vec()),
+                    });
                 } else {
                     out.push(ev.clone());
                 }
@@ -1189,8 +1319,8 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
             to.push(msg);
         }
     };
-    push(1, format!("version {version} -> {FL20_VERSION}"), &mut notes);
-    push(deleted, format!("deleted {deleted} post-v20 events"), &mut notes);
+    push(1, format!("version {version} -> {}", layout.version), &mut notes);
+    push(deleted, format!("deleted {deleted} post-{label} events"), &mut notes);
     push(
         routes_converted,
         format!("converted {routes_converted} channel routes 0x68 -> 0x16"),
@@ -1201,15 +1331,15 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
         format!("dropped {routes_dropped} duplicate 0x68 routes (0x16 already present)"),
         &mut notes,
     );
-    push(markers, format!("wrapper marker 12 -> 10 on {markers} plugins"), &mut notes);
+    push(markers, format!("wrapper marker 12 -> {} on {markers} plugins", layout.wrapper_state), &mut notes);
     push(
         clips_converted,
-        format!("rewrote {clips_converted} playlist clips {clip_size} -> 32 bytes"),
+        format!("rewrote {clips_converted} playlist clips {clip_size} -> {} bytes", layout.clip_size),
         &mut notes,
     );
     push(
         lanes_truncated,
-        format!("truncated {lanes_truncated} lane records 70 -> 66 bytes"),
+        format!("truncated {lanes_truncated} lane records 70 -> {} bytes", layout.lane_len),
         &mut notes,
     );
     push(
@@ -1219,12 +1349,12 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     );
     push(
         e1_rebuilt,
-        "rebuilt mixer param table to the v20 canonical 4697-record shape".into(),
+        format!("rebuilt mixer param table to the {label} canonical 4697-record shape"),
         &mut notes,
     );
     push(
         e1_preset_rebuilt,
-        "rebuilt mixer preset params to the v20 single-strip shape".into(),
+        format!("rebuilt mixer preset params to the {label} single-strip shape"),
         &mut notes,
     );
     push(
@@ -1244,7 +1374,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     );
     push(
         d7_truncated,
-        format!("truncated {d7_truncated} channel blobs 0xD7 to 158 bytes"),
+        format!("truncated {d7_truncated} channel blobs 0xD7 to {} bytes", layout.d7_len),
         &mut notes,
     );
     push(
@@ -1257,19 +1387,23 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     push(
         channel_scales_folded,
         format!(
-            "folded {channel_scales_folded} v25 clip stretch scales into v20 channel stretch times"
+            "folded {channel_scales_folded} v25 clip stretch scales into {label} channel stretch times"
         ),
         &mut notes,
     );
     push(
         stretch_fixed,
-        format!("rewrote {stretch_fixed} sampler stretch times f32 -> u32"),
+        if layout.stretch_f32 {
+            format!("rewrote {stretch_fixed} sampler stretch times u32 -> f32")
+        } else {
+            format!("rewrote {stretch_fixed} sampler stretch times f32 -> u32")
+        },
         &mut notes,
     );
     push(
         end_trims_reconciled,
         format!(
-            "reconciled {end_trims_reconciled} audio clip end trims to the v20 length recompute"
+            "reconciled {end_trims_reconciled} audio clip end trims to the {label} length recompute"
         ),
         &mut notes,
     );
@@ -1297,7 +1431,7 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
         let mut seen: Vec<u8> = out
             .iter()
             .map(|e| e.op)
-            .filter(|o| !FL20_KNOWN_OPS.contains(o))
+            .filter(|o| !FL20_KNOWN_OPS.contains(o) && !layout.known_extra_ops.contains(o))
             .collect();
         seen.sort_unstable();
         seen.dedup();
@@ -1305,7 +1439,8 @@ pub fn to_fl208(src: &Flp) -> Result<Outcome, String> {
     };
     if !leftovers.is_empty() {
         warnings.push(format!(
-            "events kept that v20.8 is not known to write: {}",
+            "events kept that {} is not known to write: {}",
+            layout.full_label,
             leftovers
                 .iter()
                 .map(|o| format!("0x{o:02X}"))
@@ -1848,5 +1983,55 @@ mod tests {
         let mut flp = mixer_preset(preset_params(0x2000, 26, 3930));
         flp.format = crate::flp::FORMAT_PROJECT;
         assert_eq!(converted_params(&flp).len(), 4697 * 12);
+    }
+
+    fn playlist_of(outcome: &Outcome) -> Vec<u8> {
+        outcome
+            .flp
+            .events
+            .iter()
+            .find(|e| e.op == op::PLAYLIST)
+            .and_then(|e| e.blob())
+            .unwrap()
+            .to_vec()
+    }
+
+    fn stretch_of(outcome: &Outcome) -> u32 {
+        let d7 = outcome
+            .flp
+            .events
+            .iter()
+            .find(|e| e.op == op::CHANNEL_DECO)
+            .and_then(|e| e.blob())
+            .unwrap();
+        u32::from_le_bytes(d7[96..100].try_into().unwrap())
+    }
+
+    #[test]
+    fn fl24_keeps_native_fades_and_f32_stretch() {
+        let source = v25_clip(192, 500.0, 250.0, 0.5);
+        let outcome = retarget(&source_flp_with_stretch(source.clone(), 1536.0), &FL24).unwrap();
+        let playlist = playlist_of(&outcome);
+        assert_eq!(playlist, source[..60]);
+        assert_eq!(f32::from_bits(stretch_of(&outcome)), 768.0);
+        assert!(outcome.flp.events.iter().all(|e| e.op != 0xEA));
+        assert_eq!(outcome.flp.version().as_deref(), Some(FL24_VERSION));
+    }
+
+    #[test]
+    fn fl21_writes_u32_stretch_and_60_byte_clips() {
+        let source = v25_clip(192, 500.0, 0.0, 1.0);
+        let outcome = retarget(&source_flp_with_stretch(source.clone(), 1536.0), &FL21).unwrap();
+        assert_eq!(playlist_of(&outcome), source[..60]);
+        assert_eq!(stretch_of(&outcome), 1536);
+        assert_eq!(outcome.flp.version().as_deref(), Some(FL21_VERSION));
+    }
+
+    #[test]
+    fn retarget_refuses_a_source_at_or_below_the_target() {
+        let mut flp = source_flp_with_stretch(v25_clip(192, 0.0, 0.0, 1.0), 1536.0);
+        flp.events[0].payload = Payload::Blob(b"24.2.2.4597 ".to_vec());
+        assert!(retarget(&flp, &FL24).is_err());
+        assert!(retarget(&flp, &FL21).is_ok());
     }
 }

@@ -21,6 +21,10 @@ const HOVER_ANIM_SECS: f32 = 0.18;
 
 const FL20_HINT: &str = "writes the 20.0.5.681 layout. it opens in FL 20.0.5 and in every later 20.x version";
 
+const FL24_HINT: &str = "writes the 24.2.2 layout from a v25 or v26 save. built from corpus saves, not load-tested in FL 24 yet - read the warnings";
+
+const FL21_HINT: &str = "writes the 21.2.3 layout from a v24, v25 or v26 save. built from corpus saves, not load-tested in FL 21 yet - read the warnings";
+
 const FL10_HINT: &str = "experimental: writes a 10.0.9 project. inserts above 99, slots 9-10, \
 send levels, clip fades and post-v10 plugin states do not survive - read the warnings";
 
@@ -171,6 +175,22 @@ impl App {
                         .clicked()
                     {
                         self.run_convert(ops::Target::Fl20);
+                    }
+                    for (target, label, hint) in [
+                        (ops::Target::Fl24, "to v24", FL24_HINT),
+                        (ops::Target::Fl21, "to v21", FL21_HINT),
+                    ] {
+                        if ui
+                            .add_enabled(
+                                convertible(target),
+                                egui::Button::new(RichText::new(label).color(TEXT)).fill(BTN),
+                            )
+                            .on_hover_text(hint)
+                            .on_disabled_hover_text(hint)
+                            .clicked()
+                        {
+                            self.run_convert(target);
+                        }
                     }
                     if ui
                         .add_enabled(
@@ -493,6 +513,16 @@ impl App {
                         ui.label(
                             RichText::new("open it in FL 20 and check the mixer and plugins")
                                 .color(TEXT),
+                        );
+                    }
+                    if matches!(done.target, ops::Target::Fl21 | ops::Target::Fl24) {
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "open it in FL {} and check the mixer, plugins and audio clips",
+                                &done.target.label()[1..]
+                            ))
+                            .color(TEXT),
                         );
                     }
                     if done.target == ops::Target::Fl10 {

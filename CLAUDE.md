@@ -18,7 +18,7 @@ Cargo lives at `%USERPROFILE%\.cargo\bin`. The `.bat` and `.sh` scripts add it t
 
 ```bash
 cargo build --release          # both binaries: target/release/easyflp(.exe) (GUI), easyflp-cli(.exe)
-cargo test                     # 29 unit tests, all in src/convert.rs, about 20 s cold
+cargo test                     # 35 unit tests in src/convert.rs and src/convert24.rs, about 20 s cold
 cargo test reconciles_wide     # one test by name substring
 cargo test convert::tests::    # the whole module
 build_and_run.bat              # kill the running GUI, build release, relaunch GUI (Windows)
@@ -30,6 +30,8 @@ CLI for scripted checks (exit code 0 on success, notes on `-` lines, warnings on
 ```bash
 target/release/easyflp-cli info <file.flp|.fst|.zip>
 target/release/easyflp-cli convert <file>        # writes <name>_easy.flp (v20.0.5) next to the input
+target/release/easyflp-cli convert --fl24 <file> # writes <name>_easy24.flp (v24.2.2), from a 25+ save
+target/release/easyflp-cli convert --fl21 <file> # writes <name>_easy21.flp (v21.2.3), from a 24+ save
 target/release/easyflp-cli convert --fl10 <file> # writes <name>_easy10.flp (v10.0.9)
 ```
 
@@ -55,7 +57,11 @@ parse -> roundtrip gate -> info::extract -> ops::convert_and_write
                  +----------------------------+----------------------------+
                  v                                                         v
    convert200::fl208_to_fl200  (-> 20.0.5.681, the shipped v20 output)   convert10::fl20_to_fl10  (-> 10.0.9, experimental)
+
+parse -> roundtrip gate -> convert::retarget(src, &FL24 | &FL21) -> convert24 post-pass  (-> 24.2.2.4597 / 21.2.3.4004)
 ```
+
+- `to_fl208` is `retarget(src, &FL208)`. A `Layout` holds every structural difference of a target: version, delete set, clip size, `0xD7` and `0xEE` lengths, wrapper state version, stretch time type, pattern markers, fade emulation, end-trim reconcile. `convert24.rs` adds the plugin gates and native state rules of the 24 and 21 targets. Their evidence is a corpus survey, not truth pairs; see "The 24 and 21 targets" in `FORMAT.md`.
 
 - `to_fl208` is the heart. It deletes the post-20 opcode set, rewrites routing, clips, lanes, `0xE1` mixer tables, sampler stretch time, and emulates clip fades as volume automation. A source already at major 20 skips it.
 - `to_fl200` and `to_fl10` are the public entries. Each returns `Outcome { flp, notes, warnings }`. Notes count what changed. Warnings name what could not be converted. Unknown events that survive are warned about, never deleted.
@@ -72,6 +78,8 @@ parse -> roundtrip gate -> info::extract -> ops::convert_and_write
 | `FL20_KNOWN_OPS` | convert.rs | every opcode a 20.8 save may hold; survivors outside it become warnings |
 | `POST_FL200_OPS`, `FL200_EFFECTS`, `FL200_GENERATORS`, `NATIVE_UNCHANGED` | convert200.rs | 20.0.5 delete set and the plugin names 20.0.5 ships |
 | `POST_FL10_OPS`, `FL10_KNOWN_OPS`, `FL10_EFFECTS`, `LEGACY_EFFECTS` | convert10.rs | the same for 10.0.9 |
+| `POST_FL24_OPS`, `POST_FL21_OPS`, `FL24_EXTRA_OPS`, `FL21_EXTRA_OPS` | convert.rs | delete sets and known-opcode additions of the `FL24` and `FL21` layouts |
+| `MISSING_IN_FL24`, `MISSING_IN_FL21`, `NATIVE_STABLE` | convert24.rs | plugin deny lists and the native states that are stable across versions |
 
 Extend a delete set only with byte-level evidence from a real save. `0xD8` was once in `POST_FL20_OPS` and was wrong; two genuine 20.8 saves proved 20.8 writes it.
 
@@ -153,6 +161,29 @@ A new major version usually changes one or two things and keeps the rest byte-id
 ### Add a native plugin state rule
 
 Plugins fail in the target version in one of three ways: a hang, a reset to default, or silent corruption. Get the plugin's `0xD5` from the newer save and from a target-version save of the converted project (FL rewrites the state on save). Diff those two. The 20.0.5 form is usually the newer body truncated plus a version word rewritten. Add the mapping in `native_state_fl200` (or `native_state_fl10`), keep every other plugin byte-exact, and list it in `FORMAT.md`. Unknown native states pass through and are named in one warning; never clamp a leading `u32` you have not verified.
+
+## UI and design (binding)
+
+The `ui-harness` skill is the UI, app and design standard for this project. The canonical copy is `D:\GitHub\studio multiplayer\.claude\skills\ui-harness\SKILL.md`. Invoke the skill before any change to `src/gui/` (text, layout, buttons, hints, colours, motion), and follow its "Before you reply" list. The user marked this rule as important (November 2026).
+
+The rules that are most easy to forget:
+
+- See the change before you claim it. Take a screenshot at the default size (1020x680) and at the minimum size (720x480). Name three faults in each new shot, then fix or explain each one.
+- Cut text. No hint line under a control, no tooltip on a plain button, no subtitle under a title. A value line states a fact, not a description.
+- UI text is short fragments in sentence case. No narration, no reassurance, no "you" and "your". Do not paste the wording of a request into the product.
+- No decorative icons, dots, glows, cards or borders around content. No "X · Y" or "X | Y" separators: use parentheses and commas.
+- The accent has one job. Do not spend it on decoration. Body text has at least 4.5:1 contrast. Use one secondary text level.
+- Modes are a segmented control. Actions are buttons with a visible shape. Every clickable thing reacts to hover, and the hover fades. Nothing shifts the layout on hover or when data arrives.
+- Each empty, loading and error state is one short fragment. An error states the real reason. A toast is only for a result that nothing else on screen shows.
+- Every pixel constant scales with DPI. Narrow windows stack instead of clipping.
+- A new control copies its siblings: size, fill, border, radius, font and hover.
+
+### UI record
+
+- **The UI harness**: none yet. Until one exists, check UI changes with `build_and_run.bat` and a screenshot of the real window.
+- **Standards this app settled on**: colour constants at the top of `src/gui/app.rs` (`BG`, `PANEL`, `PANEL_LIT`, `ACCENT`, `VIOLET`, `BTN`, `TEXT`, `DIM`, `WHITE`, `OK`, `ERR`, `WARN`). Hover tween `HOVER_ANIM_SECS` = 0.18 s, mixed with `mix()`. Window 1020x680 by default, 720x480 minimum (`src/gui/main.rs`). Text is all lowercase today.
+- **The user's directions**: the `ui-harness` skill governs all UI work (November 2026).
+- **Harness gaps**: no preview harness, no fake state, and no screenshot script. The target hints (`FL20_HINT`, `FL24_HINT`, `FL21_HINT`, `FL10_HINT`) and the all-lowercase labels conflict with the skill and are not yet reviewed against it.
 
 ## Pitfalls that cost past sessions
 

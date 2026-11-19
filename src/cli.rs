@@ -7,9 +7,18 @@ fn main() {
     let code = match args.first().map(String::as_str) {
         Some("info") | Some("--info") => cmd_info(args.get(1).map(PathBuf::from)),
         Some("convert") | Some("--convert") => {
-            let fl10 = args.iter().skip(1).any(|a| a == "--fl10" || a == "--v10");
+            let flag = |names: &[&str]| args.iter().skip(1).any(|a| names.contains(&a.as_str()));
+            let target = if flag(&["--fl10", "--v10"]) {
+                ops::Target::Fl10
+            } else if flag(&["--fl21", "--v21"]) {
+                ops::Target::Fl21
+            } else if flag(&["--fl24", "--v24"]) {
+                ops::Target::Fl24
+            } else {
+                ops::Target::Fl20
+            };
             let path = args.iter().skip(1).find(|a| !a.starts_with("--")).map(PathBuf::from);
-            cmd_convert(path, if fl10 { ops::Target::Fl10 } else { ops::Target::Fl20 })
+            cmd_convert(path, target)
         }
         Some("gui") => cmd_gui(args.get(1)),
         Some(p) if PathBuf::from(p).exists() => cmd_gui(args.first()),
@@ -27,6 +36,8 @@ fn usage() {
     eprintln!("usage:");
     eprintln!("  easyflp-cli info <file.flp|file.fst|file.zip>     print project information");
     eprintln!("  easyflp-cli convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input");
+    eprintln!("  easyflp-cli convert --fl24 <file>                 write <name>_easy24 (v24.2.2) from a v25/v26 save");
+    eprintln!("  easyflp-cli convert --fl21 <file>                 write <name>_easy21 (v21.2.3) from a v24/v25/v26 save");
     eprintln!("  easyflp-cli convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental");
     eprintln!("  easyflp-cli gui [file]                            launch the graphical app (easyflp)");
 }

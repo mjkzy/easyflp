@@ -13,9 +13,10 @@ download `easyflp-setup.exe` from the [latest release](https://github.com/mjkzy/
 1. open easyflp from the start menu (or run `build_and_run.bat` to build, kill the previous process, and run)
 2. drop a `.flp`, a `.fst` preset (mixer, channel or plugin state) or a `.zip` containing a FLP file onto the box, or click it to open file explorer
 3. if you want to convert the project to version `20.0.5`, click the **convert to v20 project** button
-4. the **⚠ convert to v10 project** button writes a `10.0.9` project instead. the inserts above 99, effect slots 9-10, send levels, clip fades and plugin states do not convert well
+4. the **to v24** and **to v21** buttons write a `24.2.2` or `21.2.3` project from a newer save. plugins that the target version does not ship are dropped from the mixer with a warning. these two targets are not load-tested yet
+5. the **⚠ convert to v10 project** button writes a `10.0.9` project instead. the inserts above 99, effect slots 9-10, send levels, clip fades and plugin states do not convert well
 
-the converted file is written next to the input project as `<name>_easy.flp` (`<name>_easy10.flp` for the v10 profile). a `.fst` input keeps the `.fst` extension. for a `.zip` looped package, the output is `<name>_easy.zip` with the converted `.flp` and all other files unchanged.
+the converted file is written next to the input project as `<name>_easy.flp` (`<name>_easy24.flp`, `<name>_easy21.flp`, `<name>_easy10.flp` for the other targets). a `.fst` input keeps the `.fst` extension. for a `.zip` looped package, the output is `<name>_easy.zip` with the converted `.flp` and all other files unchanged.
 
 <p align="center">
   <img src=".github/gui.png" alt="the gui information viewer with a loaded project" width="80%">
@@ -34,6 +35,8 @@ the converted file is written next to the input project as `<name>_easy.flp` (`<
 ```
 easyflp-cli info <file.flp|file.fst|file.zip>     print project information
 easyflp-cli convert <file.flp|file.fst|file.zip>  write <name>_easy (v20.0.5) next to the input
+easyflp-cli convert --fl24 <file>                 write <name>_easy24 (v24.2.2) from a v25/v26 save
+easyflp-cli convert --fl21 <file>                 write <name>_easy21 (v21.2.3) from a v24/v25/v26 save
 easyflp-cli convert --fl10 <file>                 write <name>_easy10 (v10.0.9) — experimental
 easyflp-cli gui [file]                            launch the graphical app (easyflp)
 ```
@@ -51,6 +54,8 @@ tldr:
 - convert *25* channel routing (`0x68`) to the *20* form (`0x16`)
 - rewrites playlist clip records to the *20* layout
 - truncates lane and channel records to the *20.0.5* lengths and drops the wrapper host chunk
+
+the v24 and v21 targets run the same transform with their own layout: 60-byte clips with native fades, the stretch time type, lane length and wrapper state version of the target. a post-pass rewrites the plugin states that changed (Fruity Compressor, Gross Beat, and Parametric EQ 2 for v21) and drops effects the target does not ship.
 
 the v10 profile runs the *20.8* transform first, then rewrites the stream into the *10.0.9* layout: ANSI strings, the 105-strip mixer with its four send buses, 32-byte clips on lanes `99 - track`, 8 effect slots, and FL 10's wrapper/native plugin state versions. the legacy fruity effects (blood overdrive, reeverb, phaser, chorus, balance) are re-wrapped as the VST DLLs FL 10 ships. see [FORMAT.md](FORMAT.md) for the table.
 

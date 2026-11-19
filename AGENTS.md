@@ -1,6 +1,6 @@
 # What this is
 
-a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25/26 projects to 20.0.5's format. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The GUI `easyflp.exe` (eframe/egui) is the main app. The CLI `easyflp-cli.exe` is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
+a Rust cross-platform tool (Windows-first) that views `.flp` project information and backports v21/24/25/26 projects to 20.0.5's format, and newer projects to 24.2 or 21.2. The 20.8 transform is the intermediate stage; the 20.0.5 post-pass and the v10 profile both layer on it. The GUI `easyflp.exe` (eframe/egui) is the main app. The CLI `easyflp-cli.exe` is a thin wrapper over the same library crate. `FORMAT.md` is the format knowledge — read it before touching `convert.rs`.
 
 ## Build / run / verify
 
@@ -17,8 +17,9 @@ Cargo lives at `%USERPROFILE%\.cargo\bin`; the .bat scripts add it to PATH.
 - `src/lib.rs` — library crate root; both binaries build on it.
 - `src/flp.rs` — TLV event stream parse/serialize, opcode constants, text decoding.
 - `src/info.rs` — project information extraction for the viewer.
-- `src/convert.rs` — the *20.8* retarget transform (`to_fl208`). The heart of the app.
+- `src/convert.rs` — the retarget transform (`retarget` with a `Layout`; `to_fl208` is `retarget(src, &FL208)`). The heart of the app.
 - `src/convert200.rs` — the *20.8* to *20.0.5* post-pass and the public entry `to_fl200`.
+- `src/convert24.rs` — the *24.2* and *21.2* targets: `retarget` with the `FL24` or `FL21` layout, then plugin gates and native state rules. Public entries `to_fl24` and `to_fl21`.
 - `src/wrapper.rs` — Fruity Wrapper state chunk parse/build, shared by both back-end profiles.
 - `src/package.rs` — zip read/write (a `.zip` input carries its non-flp entries through).
 - `src/ops.rs` — shared load / convert / write operations; the single implementation both binaries call.

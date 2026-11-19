@@ -52,6 +52,90 @@ The canonical `0xE1` table is a header record, then per strip 0..126: ten slot p
 
 One truth pair: a project saved by *25.2.4.5242* and the same project saved by *26.1.5.5618*. The event streams are identical except for four things. The `0xE9` clip record grows from 80 to 88 bytes: the first 72 bytes keep the *25* layout, the new bytes at 72..80 are `00 00 00 00 FF FF FF FF` on every clip, and the last 8 bytes are the zero tail of the *25* record. The header holds a second `0xAC` (`00 01 00`) after `0xC3`, followed by a `0x00` u8 event with value 0. `0xA9` is 15 instead of 7. `0xF2` byte 11 is `0x40` instead of 0. Every `0xD5` state, `0xD7` blob, `0xEE` lane record, `0xEB` table, and `0xE1` record is byte-identical to the *25* save, so the 20.8 transform applies unchanged beyond the clip size and the header `0x00`. The converter output for the *26* save matches the output for the *25* save except the `0xED` run-time bytes.
 
+## The 24 and 21 targets
+
+`convert::retarget` applies one `Layout` per target: `FL208`, `FL24`, or `FL21`. `convert24::to_fl24` and `convert24::to_fl21` run `retarget`, then a post-pass for plugin states and plugin gates. The *20.8* rules above apply unless this section names a difference.
+
+The evidence is a corpus survey and one FL 21 load test. The survey compares opcode sets, blob sizes, and plugin state headers of genuine *21.x*, *24.x*, *25.x*, and *26.x* saves. No output was load-tested in FL 24. Treat each mapping below as open unless the load test below confirms it.
+
+FL 21 load test (FL 21.2.3, November 2026). Three projects were converted with `--fl21`, opened in FL 21, and saved back unchanged:
+
+| source | result | what the FL 21 save shows |
+|---|---|---|
+| *24.2.2*, 16 effects, 29 audio clips | loads | Parametric EQ 2 (4 states) and Compressor byte-identical to the output |
+| *25.2.0*, 28 effects, 53 audio clips | loads | Parametric EQ 2 (6 states, 3 with offset 292 = 3 or offset 296 = 1) and Compressor (2 states) byte-identical; Fruity Convolver state 3 rewritten from 612 to 576 bytes; Gross Beat state 8 grows by 24 bytes |
+| *26.1.6*, 27 effects, 56 audio clips | loads, then crashes in `Fruity Parametric EQ 2_x64.dll` (access violation) or fails with "Invalid pointer operation" when the project closes | fixed: EQ 2 offset 292 = 3 set to 1 (see below) |
+
+In both loaded saves, VST plugins that FL 21 did not find (Auto-Tune Pro, Roland D-50) collapse to a 73-byte wrapper stub. That is a missing plugin in the test install, not a converter fault.
+
+The *26* crash was bisected in FL 21.2.3 with variants of the output. Each variant was opened, played, and closed with File > New:
+
+| variant | result |
+|---|---|
+| every Gross Beat removed | stable |
+| wrapper chunk 2 flag byte restored from the source | crashes |
+| every playlist clip removed | stable |
+| clip offset 52 (per-clip pitch ratio, *25+*) reset to 1.0 | crashes |
+| Gross Beat states replaced by an FL 21 save | crashes |
+| every Parametric EQ 2 removed | stable |
+| only the EQ 2 in front of a Gross Beat on insert 2 removed | stable |
+| every EQ 2 kept, offset 292 = 3 set to 1 (2 states) | stable |
+
+The EQ 2 on insert 2 held offset 292 = 3. The crash needs audio through that EQ, which is why removing the clips or the Gross Beat after it also hid the crash. The *24.2.2* and *25.2.0* projects hold offset 292 = 3 too, but on EQs that got little or no audio in the test. The converter output now equals the last variant byte for byte.
+
+| structure | 25/26 form | 24.2.2 form | 21.2.3 form |
+|---|---|---|---|
+| `0xC7` version / `0x9F` build | `25.x` / `26.x` | `"24.2.2.4597"` / 4597 | `"21.2.3.4004"` / 4004 |
+| `0xC8` registration | several forms | 10 bytes `20 00 20 00 20 00 20 00 00 00` | the same 10 bytes |
+| `0xA9` header event | 7 (*25*), 15 (*26*) | 5 | deleted |
+| deleted opcodes | present | `0x33 0x34 0x67 0x8E 0xAA 0xAB 0xAC 0xC0 0xFB 0xFC 0xFD` | the *24* set plus `0x30 0x31 0x32 0xA9` |
+| `0xD5` wrapper state version | 12 | 12 | 10 |
+| wrapper chunk 57 | present | kept | kept |
+| wrapper chunk 2 byte 12 | can set `0x01`, `0x10` | clear bit `0x01` | clear bits `0x11` |
+| `0xD7` channel blob | 168 bytes | 168 bytes | 168 bytes |
+| `0xD7` stretch time | f32 | f32 | u32 |
+| `0xE9` clip record | 80 or 88 bytes | 60 bytes, the leading 60 | 60 bytes, the leading 60 |
+| `0xE9` stretch scale (offset 64) | f64 | folded into the `0xD7` stretch time | folded into the `0xD7` stretch time |
+| clip fades (offsets 36 and 44) | native | native, no emulation | native, no emulation |
+| `0xEE` lane record | 70 bytes | 70 bytes | 66 bytes |
+| `0xEB` | 1 byte | padded to 127 bytes | padded to 127 bytes |
+| `0xE1` mixer table | base `0x7000` | 4697 records, base `0x2000` | 4697 records, base `0x2000` |
+| pattern time markers | present | kept | kept |
+
+Evidence notes:
+
+- Delete sets: each deleted opcode occurs in saves of a newer version and in no save of the target version. `0x30 0x31 0x32 0xA9` occur in *24.2* saves and in no *21.2* save. Survivors outside `FL20_KNOWN_OPS` and the layout's `known_extra_ops` stay and produce a warning. `0xA0` and `0xA1` occur in two *25.2* saves only; their meaning is unknown.
+- `0xC8`: 53 of 66 *24* saves hold the 10-byte stand-in form.
+- The 60-byte clip record is a prefix of the 80- and 88-byte records. Fade lengths at offsets 36 and 44 have the same meaning in all four versions.
+- The *20.8* end-trim reconcile and the fade emulation do not run for these targets. No evidence shows that *21* or *24* recompute stretched clip lengths at load. This is an open question.
+- Some *25* and *26* saves hold wrapper state 10. The converter keeps that value.
+
+Native plugin states (leading `u32` / length):
+
+| plugin | 21 | 24 | 25 | 26 | rule |
+|---|---|---|---|---|---|
+| Fruity Compressor | 2 / 32 | 2 / 32 | 3 / 36 | 3 / 36 | 3 -> 2, drop the trailing `u32`; warn when it is nonzero |
+| Fruity Parametric EQ 2 | 7 | 8 | 8 | 8 | *21* only: rewrite the version word 8 -> 7, set offset 292 to 1 when it is not 0 or 1, keep the rest (load-tested) |
+| Gross Beat | 8 | 8 | 8 | 9 | 9 -> 8, the *20.0.5* rule |
+| FLEX | — | — | — | 1 / 2707 | carried unchanged, warned (the *26* rework) |
+
+EQ 2 offset 292 is a `u32` setting. All 71 corpus *21* states hold 0 or 1. *24* to *26* states also hold 3 (61 of 216 *24* states, 394 of 639 *26* states). FL 21.2.3 loads a 3 and saves it back unchanged, but the plugin crashes when it processes audio. The converter sets it to 1, the *21* value in 68 of 71 states, and warns. The meaning of the setting is not known; a truth pair of one *24* EQ 2 with that setting changed would name it. Offset 296 = 1 occurs in *26* states only, and FL 21 load-tested it without a fault; it is kept.
+
+The states named in `NATIVE_STABLE` (`convert24.rs`) hold the same leading `u32` and length in every corpus version that holds them, and pass through without a warning. Examples: Low Lifter 6 / 82 in *24* and *26*, EQUO equal in *20* and *25*, Fruity Reeverb equal in *21* and *24*. Every other native state passes through and is named in one warning. LuxeVerb, Distructor, Spreader, and Hyper Chorus have no cross-version evidence.
+
+Plugin gates come from the release history of the official plugins. A missing effect is dropped from its slot with a warning. A missing generator stays, and the warning names it.
+
+- Missing in *24.2* (`MISSING_IN_FL24`): Emphasis, Emphasizer, FL Studio Mobile, FL Studio Mobile Rack, Fruity Slicer 2, Transmitter.
+- Missing in *21.2* (`MISSING_IN_FL21`): the *24* list plus Kepler Exo, Low Lifter, Spreader, Transporter.
+
+Open questions:
+
+- A load test in FL 24.
+- The meaning of EQ 2 offset 292 (value 3 in *24+*), and whether 1 is the closest *21* value.
+- The meaning of `0xA0` and `0xA1`.
+- Whether *24* reads the *26* FLEX state.
+- Per-clip audio editing (*25*) and Stretch Pro (*20.9*): the survey found no field beyond the ones above.
+
 ## 0xD7 sampler stretch time
 
 `0xD7` offset 96 holds the sampler "time stretching: time" value. Both versions use the same unit: 1/768 bar (PyFLP `LinearMusical`, bars×768 + steps×48 + ticks, 16 steps per bar, 48 ticks per step). Only the storage type differs. *20.8* stores a `u32le`. *24.2* and later store an `f32le` in the same four bytes. The survey pins the switch between build 24.1.1.4285, which still writes u32, and build 24.2.2.4597, which writes f32. The conversion is `u32 = round(f32)`. The project PPQ does not enter it.
