@@ -45,7 +45,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target\installer\easyflp-setup.exe, target\release\easyflp.exe, target\release\easyflp-cli.exe dist\
+          Copy-Item target\installer\easyflp-setup.exe, target\release\easyflp-cli.exe dist\
 
       - name: Upload easyFLP
         uses: actions/upload-artifact@v4
@@ -80,20 +80,13 @@ jobs:
       - name: Create new release
         run: |
           cat > notes.md <<'EOF'
-          This build was automated from ${{ github.sha }}.
+          If you do not know what to download, **download `easyflp-setup.exe`**.
 
-          **If you are unsure what to download, download `easyflp-setup.exe`.** Run it to install easyflp. It adds easyflp to the Start Menu, and you do not need admin rights. The installer can also add easyflp to the "Open with" menu for `.flp` and `.fst` files.
+          If you are an advanced user or an agent and want to use the command line, look at **`easyflp-cli.exe`**.
 
-          The other files:
-
-          - `easyflp.exe` is the easyflp app itself, the same app that the installer installs. Download it if you want a portable app with no install.
-          - `easyflp-cli.exe` is the command line tool, for terminals and scripts. The installer includes it and can add it to PATH.
-
-          `easyflp.exe` was the command line tool in older builds. The command line tool is now `easyflp-cli.exe`, and the old `easyflp-gui.exe` is now `easyflp.exe`.
-
-          The files are not signed, so Windows SmartScreen can show a warning. Click **More info**, then **Run anyway**.
+          If Windows shows a blue warning, click **More info**, then **Run anyway**.
           EOF
-          gh release create latest "easyFLP/easyflp-setup.exe" "easyFLP/easyflp.exe" "easyFLP/easyflp-cli.exe" \
+          gh release create latest "easyFLP/easyflp-setup.exe" "easyFLP/easyflp-cli.exe" \
             --title "Latest Build" \
             --notes-file notes.md
         env:

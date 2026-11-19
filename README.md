@@ -6,7 +6,7 @@ this is a **work in progress** project, and may have bugs.
 
 ## install
 
-download `easyflp-setup.exe` from the [latest release](https://github.com/mjkzy/easyflp/releases/tag/latest) and run it. easyflp then opens from the start menu. no admin rights needed. `easyflp.exe` on the same page is the portable app, with no install.
+download `easyflp-setup.exe` from the [latest release](https://github.com/mjkzy/easyflp/releases/tag/latest) and run it. easyflp then opens from the start menu. no admin rights needed.
 
 ## how to use
 
