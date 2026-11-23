@@ -23,9 +23,9 @@ const FL20_REGISTRATION: [u8; 50] = [
    plus 0xAC (25's fixed-3-byte event). 0x68 is absent on purpose: it converts to 0x16 before
    deletion would apply. 0xD8 was here until two genuine 20.8.4.2576 saves proved it is a
    v20-era event (see FORMAT.md). */
-const POST_FL20_OPS: [u8; 27] = [
+const POST_FL20_OPS: [u8; 28] = [
     0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x65, 0x67, 0xA5,
-    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xC0, 0xF2, 0xF3, 0xFC, 0xFD,
+    0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xC0, 0xF2, 0xF3, 0xFB, 0xFC, 0xFD,
 ];
 
 /* every opcode observed in a 20.8 save, plus 20-era events our truth file happens not to use
@@ -427,6 +427,7 @@ struct FadeGroup {
     fade_out_beats: f64,
 }
 
+const AUTOMATION_CHANNEL_KIND: u32 = 5;
 const CLIP_FADE_IN_OFFSET: usize = 36;
 const CLIP_FADE_OUT_OFFSET: usize = 44;
 const CLIP_STRETCH_SCALE_OFFSET: usize = 64;
@@ -528,6 +529,137 @@ fn channel_stretch_scales(
         }
     }
     observed
+}
+
+struct ChannelSplit {
+    flp: Flp,
+    copies: usize,
+}
+
+fn split_stretch_channels(src: &Flp, clip_size: usize) -> Option<ChannelSplit> {
+    let has_stretch_time = channels_with_stretch_time(src);
+    let mut scales: Vec<Vec<(f64, usize)>> = vec![Vec::new(); has_stretch_time.len()];
+    for event in src.events.iter().filter(|event| event.op == op::PLAYLIST) {
+        let Some(blob) = event.blob() else { continue };
+        for rec in blob.chunks_exact(clip_size) {
+            let channel = usize::from(u16::from_le_bytes([rec[6], rec[7]]));
+            if !has_stretch_time.get(channel).copied().unwrap_or(false) {
+                continue;
+            }
+            let Some(scale) = clip_stretch_scale(rec, clip_size) else {
+                continue;
+            };
+            match scales[channel]
+                .iter_mut()
+                .find(|(known, _)| (*known - scale).abs() <= 1e-9)
+            {
+                Some(entry) => entry.1 += 1,
+                None => scales[channel].push((scale, 1)),
+            }
+        }
+    }
+
+    let arrangement = src.events.iter().position(|event| event.op == 0x63)?;
+    let starts: Vec<(usize, usize)> = src.events[..arrangement]
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| event.op == op::CHANNEL_NEW)
+        .filter_map(|(at, event)| Some((event.value()? as usize, at)))
+        .collect();
+    if starts.len() != usize::from(src.n_channels) {
+        return None;
+    }
+
+    struct Copy {
+        channel: usize,
+        scale: f64,
+        index: u16,
+        block: std::ops::Range<usize>,
+    }
+    let mut copies: Vec<Copy> = Vec::new();
+    let mut next_index = usize::from(src.n_channels);
+    for (channel, list) in scales.iter().enumerate() {
+        if list.len() < 2 {
+            continue;
+        }
+        let Some(order) = starts.iter().position(|&(value, _)| value == channel) else {
+            continue;
+        };
+        let start = starts[order].1;
+        let end = starts.get(order + 1).map_or(arrangement, |&(_, at)| at);
+        /* an audio clip channel block of 25 and 26 ends at 0x33. a block with another ending
+           holds events that are not the channel's own, so it is not copied. */
+        if src.events[end - 1].op != 0x33 {
+            continue;
+        }
+        let keep = (0..list.len())
+            .max_by_key(|&i| (list[i].1, std::cmp::Reverse(i)))
+            .unwrap_or(0);
+        for (i, &(scale, _)) in list.iter().enumerate() {
+            if i == keep {
+                continue;
+            }
+            if next_index >= 0x5000 {
+                return None;
+            }
+            copies.push(Copy {
+                channel,
+                scale,
+                index: next_index as u16,
+                block: start..end,
+            });
+            next_index += 1;
+        }
+    }
+    if copies.is_empty() {
+        return None;
+    }
+
+    let mut events = Vec::with_capacity(src.events.len());
+    for (at, event) in src.events.iter().enumerate() {
+        if at == arrangement {
+            for copy in &copies {
+                events.push(Event {
+                    op: op::CHANNEL_NEW,
+                    payload: Payload::U16(copy.index),
+                });
+                events.extend(src.events[copy.block.start + 1..copy.block.end].iter().cloned());
+            }
+        }
+        match (event.op, event.blob()) {
+            (op::PLAYLIST, Some(blob)) => {
+                let mut blob = blob.to_vec();
+                for rec in blob.chunks_exact_mut(clip_size) {
+                    let channel = usize::from(u16::from_le_bytes([rec[6], rec[7]]));
+                    let Some(scale) = clip_stretch_scale(rec, clip_size) else {
+                        continue;
+                    };
+                    if let Some(copy) = copies.iter().find(|copy| {
+                        copy.channel == channel && (copy.scale - scale).abs() <= 1e-9
+                    }) {
+                        rec[6..8].copy_from_slice(&copy.index.to_le_bytes());
+                    }
+                }
+                events.push(Event { op: op::PLAYLIST, payload: Payload::Blob(blob) });
+            }
+            _ => events.push(event.clone()),
+        }
+    }
+
+    let n_channels = next_index as u16;
+    let mut header_raw = src.header_raw.clone();
+    header_raw[2..4].copy_from_slice(&n_channels.to_le_bytes());
+    Some(ChannelSplit {
+        copies: copies.len(),
+        flp: Flp {
+            format: src.format,
+            n_channels,
+            ppq: src.ppq,
+            header_raw,
+            events,
+            trailing: src.trailing.clone(),
+        },
+    })
 }
 
 fn fl20_clip_length(
@@ -668,6 +800,7 @@ fn plan_fades(
     warnings: &mut Vec<String>,
 ) -> Vec<FadeGroup> {
     struct ChanMeta {
+        kind: u32,
         vol: u32,
         colour: u32,
         name: String,
@@ -686,12 +819,18 @@ fn plan_fades(
     for ev in &src.events {
         match ev.op {
             op::CHANNEL_NEW => chans.push(ChanMeta {
+                kind: 0,
                 vol: 10000,
                 colour: 6316174,
                 name: String::new(),
                 stem: String::new(),
             }),
             0x63 => break,
+            op::CHANNEL_KIND => {
+                if let (Some(c), Some(v)) = (chans.last_mut(), ev.value()) {
+                    c.kind = v;
+                }
+            }
             0x80 => {
                 if let (Some(c), Some(v)) = (chans.last_mut(), ev.value()) {
                     c.colour = v;
@@ -728,6 +867,11 @@ fn plan_fades(
             min_lane = min_lane.min(i32::from_le_bytes(rec[12..16].try_into().unwrap()));
             let chan = u16::from_le_bytes([rec[6], rec[7]]);
             if chan >= 0x5000 || usize::from(chan) >= chans.len() {
+                continue;
+            }
+            /* 26 writes a fade time into automation clip records too (kind 5); the clip has no
+               audio to fade. */
+            if chans[usize::from(chan)].kind == AUTOMATION_CHANNEL_KIND {
                 continue;
             }
             let (fi, fo) = clip_fade_bits(rec);
@@ -965,6 +1109,10 @@ pub fn retarget(src: &Flp, layout: &Layout) -> Result<Outcome, String> {
         .unwrap_or(0);
     let clip_size = info::clip_record_size(major, playlist_len)
         .ok_or("playlist blob length matches no known clip record size")?;
+
+    let split = split_stretch_channels(src, clip_size);
+    let channel_copies = split.as_ref().map_or(0, |split| split.copies);
+    let src = split.as_ref().map_or(src, |split| &split.flp);
 
     /* 0x68 replaces 0x16 in 25 at the same position in the channel param block, so an in-place
        rewrite lands the route where 20.8 expects it. a file carrying both per channel (some
@@ -1381,6 +1529,13 @@ pub fn retarget(src: &Flp, layout: &Layout) -> Result<Outcome, String> {
         clip_scales_applied,
         format!(
             "retimed {clip_scales_applied} playlist clips whose v25 stretch scale could not move to the channel"
+        ),
+        &mut notes,
+    );
+    push(
+        channel_copies,
+        format!(
+            "copied {channel_copies} audio channels so each v25 clip stretch scale has its own channel"
         ),
         &mut notes,
     );

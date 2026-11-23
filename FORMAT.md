@@ -40,7 +40,7 @@ This table is the intermediate stage. The tool writes the *20.0.5* layout, and t
 | pattern time marker | `0x94` run inside the pattern block | absent | delete the run (see below) |
 | stream tail | `0xE1 0x85 0xF3 0x2F` | `0xE1 0x85` | `0xF3`/`0x2F` are in the delete set |
 
-The deleted event set is the opcode difference between the two truth files, plus `0xAC`, minus `0xD8`, plus the four marker sub-records and the *25.2* additions: `0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x34 0x65 0x67 0xA5 0xA6 0xA7 0xA8 0xA9 0xAA 0xAB 0xAC 0xC0 0xF2 0xF3 0xFC 0xFD`. Two genuine *20.8* saves proved that *20.8* writes `0xD8` (see below). `0xC0` carries the project's "FL Studio" name string; `0x34`, `0xAB`, `0xFC`, `0xFD` are per-pattern metadata, all zero in the observed *25.2.4* save.
+The deleted event set is the opcode difference between the two truth files, plus `0xAC`, minus `0xD8`, plus the four marker sub-records and the *25.2* additions: `0x29 0x2A 0x2B 0x2C 0x2D 0x2E 0x2F 0x30 0x31 0x32 0x33 0x34 0x65 0x67 0xA5 0xA6 0xA7 0xA8 0xA9 0xAA 0xAB 0xAC 0xC0 0xF2 0xF3 0xFB 0xFC 0xFD`. `0xFB` is a 43-byte blob in an audio clip channel block, between `0x20` and `0xE4`. The corpus survey finds it in *25.2.0*, *26.1.5* and *26.1.6* saves and in no *20.x*, *21* or *24.2.2* save. A *26.1.6* project converted with `0xFB` kept gave the "invalid data" dialog on load. Two genuine *20.8* saves proved that *20.8* writes `0xD8` (see below). `0xC0` carries the project's "FL Studio" name string; `0x34`, `0xAB`, `0xFC`, `0xFD` are per-pattern metadata, all zero in the observed *25.2.4* save.
 
 *25* addresses the mixer "current strip" as strip 501 (`0xE1` target `0xED40`). *20.8* addresses it as strip 126. The rebase clamps strip indexes above 126 to 126.
 
@@ -150,7 +150,9 @@ Left as-is, *20.8* reads the f32 bit pattern as a u32 (about 1.1e9), stretches t
 
 When all clips of a channel share one scale, fold the scale into the channel: multiply the `0xD7` stretch time by it. Keep clip positions, lengths, and trims unchanged. *20.8* derives clip playback from the channel stretch time (see the recompute below), so the fold gives the same sound.
 
-Do not retime clip lengths instead. A new length moves the clip's right edge, and *20.8* shows the wrong source segment. Use that fallback only when clips of one channel carry different scales.
+When clips of one channel carry different scales, copy the channel block once per extra scale. The scale with the most clips keeps the original channel. Each copy is the block from its `0x40` to the next `0x40`, with a new channel index, inserted before the first `0x63`. `FLhd` nChannels counts the copies. The clips of each scale point at their copy (record offset 6), and the fold then runs per channel. Copy a block only when it ends at `0x33`: every audio clip channel block in the surveyed *25.2* and *26.1* saves ends there. This rule has no truth pair. No *20* load test of a copied channel exists yet. Automation and initialised controls that target the original channel do not reach the copies.
+
+Do not retime clip lengths instead. A new length moves the clip's right edge, and *20.8* shows the wrong source segment. Use that fallback only when the channel has no stretch time or its block cannot be copied.
 
 ## 0xE9 audio clip trims and the v20 length recompute
 
@@ -167,6 +169,10 @@ Where the window is too long, *20.8* lengthens the clip, and the converter rewri
 ## Clip fades (21+) and the channel-volume emulation
 
 The 80-byte clip record tail (*25*): u32 clip uid at 32, f32 fade-in ms at 36, f32 fade-out ms at 44, f32 gain at 52, u32 fade flags at 56, and f64 stretch scale at 64. Offsets 24-31 keep the v20 trim meaning.
+
+*26.1.6* also writes a fade time into the record of an automation clip (channel kind 5). One sample: an automation clip carried the same 3468.75 ms fade-out as the audio clip beside it. The converter emulates no fade there.
+
+Offsets 40 and 48 hold an f32 curve value for the fade-in and the fade-out. The value is 0 in most surveyed *26.1* clips. Nonzero samples: -0.389, -0.595, -13.827, 28.091, -1363.095. Five *26.1.6* saves of one clip with the curve handle moved give 2672339.25, -2672339.25, -3.2987, 115.4142 and 2.2888, so the handle limits are ±2672339.25. In the fourth save the gain at offset 52 is 0.2661; the other four hold 1.0. The converter does not emulate the gain. The unit and the curve formula are open. One sample: -1363.095 on a 3468.75 ms fade-out draws a fast early drop, near silence at half the fade. The converter ignores both values and writes the tension 0 shape.
 
 v20 has no fade fields. The converter emulates each distinct (channel, length, fade-in, fade-out) clip shape with one automation channel linked to the audio channel's volume, plus one playlist clip per faded instance on a free lane. All template bytes come from a genuine *20.8.4.2576* save of exactly this construction:
 
